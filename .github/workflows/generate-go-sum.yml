@@ -1,4 +1,4 @@
-name: Generate go.sum
+name: Generate and Verify go.sum
 
 on:
   workflow_dispatch:
@@ -8,12 +8,23 @@ on:
         required: true
         default: '1.21'
         type: string
+      clean_cache:
+        description: 'Clean module cache'
+        required: false
+        default: 'true'
+        type: boolean
+      use_proxy:
+        description: 'Use Go proxy'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   generate:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     
     steps:
       - name: Checkout repository
@@ -23,26 +34,95 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ github.event.inputs.go_version }}
+          cache: true
       
-      - name: Clean old go.sum
+      - name: Configure Go environment
         run: |
-          rm -f go.sum
-          echo "Removed old go.sum"
+          if [[ "${{ github.event.inputs.use_proxy }}" == "true" ]]; then
+            go env -w GOPROXY=https://goproxy.io,direct
+            echo "Using Go proxy: https://goproxy.io"
+          else
+            go env -w GOPROXY=direct
+            echo "Using direct proxy"
+          fi
+          
+          if [[ "${{ github.event.inputs.clean_cache }}" == "true" ]]; then
+            go clean -modcache
+            echo "Cleaned module cache"
+          fi
       
-      - name: Generate new go.sum
+      - name: Show Go environment
         run: |
-          go mod tidy
-          go mod verify
-          echo "Generated new go.sum"
+          echo "Go version: $(go version)"
+          echo "GOPROXY: $(go env GOPROXY)"
+          echo "GOSUMDB: $(go env GOSUMDB)"
+      
+      - name: Backup old go.sum
+        run: |
+          if [ -f go.sum ]; then
+            cp go.sum go.sum.backup
+            echo "Backed up old go.sum"
+          fi
+      
+      - name: Remove old go.sum
+        run: rm -f go.sum
+      
+      - name: Download dependencies
+        run: go mod download
+      
+      - name: Tidy go.mod
+        run: go mod tidy
+      
+      - name: Verify dependencies
+        run: go mod verify
+      
+      - name: Check go.sum content
+        id: check
+        run: |
+          if [ ! -f go.sum ]; then
+            echo "❌ go.sum was not generated!"
+            exit 1
+          fi
+          
+          LINES=$(wc -l < go.sum)
+          echo "✅ go.sum generated with $LINES lines"
+          echo "lines=$LINES" >> $GITHUB_OUTPUT
       
       - name: Show go.sum content
         run: |
           echo "=== go.sum content ==="
           cat go.sum
+          echo ""
+          echo "=== Checksum verification ==="
+          sha256sum go.sum
       
-      - name: Commit and push go.sum
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Test build
+        run: |
+          echo "Testing build..."
+          go build -o /tmp/test_build main.go
+          if [ -f /tmp/test_build ]; then
+            echo "✅ Build successful"
+            rm /tmp/test_build
+          else
+            echo "❌ Build failed"
+            exit 1
+          fi
+      
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit_message: "chore: update go.sum"
-          file_pattern: "go.sum"
-          branch: ${{ github.ref_name }}
+          commit-message: "chore: update go.sum"
+          title: "Update go.sum"
+          body: |
+            This PR updates go.sum with correct checksums.
+            
+            **Changes:**
+            - Generated new go.sum with $(wc -l < go.sum) lines
+            - Verified all dependencies
+            - Build test passed
+            
+            **Go version:** ${{ github.event.inputs.go_version }}
+            **Proxy:** ${{ github.event.inputs.use_proxy && 'enabled' || 'disabled' }}
+          branch: update-go-sum
+          base: ${{ github.ref_name }}
+          delete-branch: true
