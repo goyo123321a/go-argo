@@ -8,43 +8,30 @@ on:
         required: true
         default: '1.21'
         type: string
-      auto_commit:
-        description: 'Auto commit to main'
-        required: false
-        default: 'true'
-        type: boolean
+
+permissions:
+  contents: write
 
 jobs:
-  generate:
+  fix:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # 确保有写入权限
+      contents: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0  # 获取完整历史
       
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ github.event.inputs.go_version }}
       
-      - name: Configure Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-      
       - name: Fix go.sum
         run: |
           echo "🔧 Fixing go.sum..."
-          
-          # 备份旧文件
-          if [ -f go.sum ]; then
-            cp go.sum go.sum.old
-          fi
           
           # 清理并重新生成
           go clean -modcache
@@ -53,47 +40,24 @@ jobs:
           go mod tidy
           go mod verify
           
-          # 显示变化
-          if [ -f go.sum.old ]; then
-            echo "=== Changes ==="
-            diff -u go.sum.old go.sum || true
-          fi
+          echo "✅ go.sum regenerated with $(wc -l < go.sum) lines"
       
       - name: Test build
         run: |
-          echo "🧪 Testing build..."
-          go build -o /tmp/myapp main.go
-          if [ -f /tmp/myapp ]; then
+          go build -o myapp main.go
+          if [ -f myapp ]; then
             echo "✅ Build successful"
-            rm /tmp/myapp
+            rm myapp
           else
             echo "❌ Build failed"
             exit 1
           fi
       
-      - name: Commit and push directly
-        if: github.event.inputs.auto_commit == 'true'
-        run: |
-          # 检查是否有变化
-          if git diff --quiet go.sum; then
-            echo "No changes to go.sum"
-            exit 0
-          fi
-          
-          # 提交更改
-          git add go.sum
-          git commit -m "fix: regenerate go.sum with correct checksums"
-          
-          # 推送到 main 分支
-          git push origin main
-          echo "✅ Changes committed and pushed to main"
-      
-      - name: Show summary
-        run: |
-          echo "## ✅ Success" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**go.sum:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Lines: $(wc -l < go.sum)" >> $GITHUB_STEP_SUMMARY
-          echo "- Size: $(du -h go.sum | cut -f1)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Build test:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
+      - name: Commit and push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: regenerate go.sum"
+          file_pattern: "go.sum"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
