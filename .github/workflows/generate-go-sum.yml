@@ -1,4 +1,4 @@
-name: Generate and Fix go.sum
+name: Generate and Verify go.sum
 
 on:
   workflow_dispatch:
@@ -8,56 +8,197 @@ on:
         required: true
         default: '1.21'
         type: string
-
-permissions:
-  contents: write
+      clean_cache:
+        description: 'Clean module cache'
+        required: false
+        default: 'true'
+        type: boolean
+      use_proxy:
+        description: 'Use Go proxy'
+        required: false
+        default: 'true'
+        type: boolean
+      create_pr:
+        description: 'Create Pull Request instead of direct commit'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
-  fix:
+  generate:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ github.event.inputs.go_version }}
+          cache: true
       
-      - name: Fix go.sum
+      - name: Configure Go environment
         run: |
-          echo "🔧 Fixing go.sum..."
+          if [[ "${{ github.event.inputs.use_proxy }}" == "true" ]]; then
+            go env -w GOPROXY=https://goproxy.io,direct
+            echo "Using Go proxy: https://goproxy.io"
+          else
+            go env -w GOPROXY=direct
+            echo "Using direct proxy"
+          fi
           
-          # 清理并重新生成
-          go clean -modcache
-          rm -f go.sum
-          go mod download
-          go mod tidy
-          go mod verify
+          if [[ "${{ github.event.inputs.clean_cache }}" == "true" ]]; then
+            go clean -modcache
+            echo "Cleaned module cache"
+          fi
+      
+      - name: Show Go environment
+        run: |
+          echo "Go version: $(go version)"
+          echo "GOPROXY: $(go env GOPROXY)"
+          echo "GOSUMDB: $(go env GOSUMDB)"
+          echo "GO111MODULE: $(go env GO111MODULE)"
+      
+      - name: Backup old go.sum
+        run: |
+          if [ -f go.sum ]; then
+            cp go.sum go.sum.backup
+            echo "Backed up old go.sum"
+            echo "Old go.sum size: $(wc -l < go.sum) lines"
+          else
+            echo "No existing go.sum found"
+          fi
+      
+      - name: Remove old go.sum
+        run: rm -f go.sum
+      
+      - name: Download dependencies
+        run: go mod download
+      
+      - name: Tidy go.mod
+        run: go mod tidy
+      
+      - name: Verify dependencies
+        run: go mod verify
+      
+      - name: Check go.sum content
+        id: check
+        run: |
+          if [ ! -f go.sum ]; then
+            echo "❌ go.sum was not generated!"
+            exit 1
+          fi
           
-          echo "✅ go.sum regenerated with $(wc -l < go.sum) lines"
+          LINES=$(wc -l < go.sum)
+          SIZE=$(du -h go.sum | cut -f1)
+          echo "✅ go.sum generated with $LINES lines ($SIZE)"
+          echo "lines=$LINES" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+      
+      - name: Show go.sum content
+        run: |
+          echo "=== go.sum content ==="
+          cat go.sum
+          echo ""
+          echo "=== Checksum verification ==="
+          sha256sum go.sum
       
       - name: Test build
         run: |
-          go build -o myapp main.go
-          if [ -f myapp ]; then
+          echo "🧪 Testing build..."
+          go build -o /tmp/test_build main.go
+          if [ -f /tmp/test_build ]; then
             echo "✅ Build successful"
-            rm myapp
+            rm /tmp/test_build
           else
             echo "❌ Build failed"
             exit 1
           fi
       
-      - name: Commit and push
+      - name: Compare with old go.sum
+        id: compare
+        run: |
+          if [ -f go.sum.backup ]; then
+            if diff -q go.sum.backup go.sum > /dev/null; then
+              echo "✅ No changes in go.sum"
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "📝 go.sum has changed"
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "=== Changes ==="
+              diff -u go.sum.backup go.sum || true
+            fi
+          else
+            echo "📝 New go.sum created"
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Pull Request
+        if: steps.compare.outputs.changed == 'true' && github.event.inputs.create_pr == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: update go.sum (${{ steps.check.outputs.lines }} lines)"
+          title: "Update go.sum"
+          body: |
+            ## 📦 go.sum Update
+            
+            This PR updates `go.sum` with correct checksums.
+            
+            ### 📊 Changes
+            - **Lines:** ${{ steps.check.outputs.lines }}
+            - **Size:** ${{ steps.check.outputs.size }}
+            - **Go version:** ${{ github.event.inputs.go_version }}
+            - **Proxy:** ${{ github.event.inputs.use_proxy && 'enabled' || 'disabled' }}
+            
+            ### ✅ Verification
+            - [x] Dependencies downloaded
+            - [x] go.mod tidied
+            - [x] All modules verified
+            - [x] Build test passed
+            
+            ### 🔧 Generated with
+            ```bash
+            go version
+            go env GOPROXY
+            ```
+            
+            Please review and merge.
+          branch: update-go-sum-${{ github.run_id }}
+          base: ${{ github.ref_name }}
+          delete-branch: true
+          labels: dependencies,automated-pr
+      
+      - name: Commit directly
+        if: steps.compare.outputs.changed == 'true' && github.event.inputs.create_pr == 'false'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: regenerate go.sum"
+          commit_message: "chore: update go.sum (${{ steps.check.outputs.lines }} lines)"
           file_pattern: "go.sum"
-          commit_user_name: "github-actions[bot]"
-          commit_user_email: "github-actions[bot]@users.noreply.github.com"
-          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          branch: ${{ github.ref_name }}
+      
+      - name: Generate summary
+        run: |
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## ✅ go.sum Generation Complete
+          
+          ### 📊 Statistics
+          | Item | Value |
+          |------|-------|
+          | Lines | ${{ steps.check.outputs.lines }} |
+          | Size | ${{ steps.check.outputs.size }} |
+          | Go Version | ${{ github.event.inputs.go_version }} |
+          | Changes | ${{ steps.compare.outputs.changed }} |
+          
+          ### 🔧 Environment
+          - **Proxy:** ${{ github.event.inputs.use_proxy && 'Enabled' || 'Disabled' }}
+          - **Cache Cleaned:** ${{ github.event.inputs.clean_cache && 'Yes' || 'No' }}
+          - **Build Test:** ✅ Passed
+          
+          ### 📝 Summary
+          ${{ steps.compare.outputs.changed == 'true' && 'go.sum has been updated' || 'go.sum is already up to date' }}
+          
+          EOF
