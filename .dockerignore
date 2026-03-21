@@ -1,0 +1,49 @@
+# Git
+.git/
+.gitignore
+
+# 构建产物
+proxy-app
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# 依赖
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 临时文件
+.tmp/
+*.log
+boot.log
+sub.txt
+list.txt
+config.json
+config.yaml
+tunnel.json
+tunnel.yml
+
+# 下载的二进制文件
+.tmp/*
+
+# 文档
+README.md
+LICENSE
+
+# Docker
+Dockerfile
+.dockerignore
+
+# 环境变量
+.env
+.env.local
