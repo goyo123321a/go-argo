@@ -1,4 +1,4 @@
-name: Generate and Verify go.sum
+name: Auto Update go.sum
 
 on:
   workflow_dispatch:
@@ -18,22 +18,29 @@ on:
         required: false
         default: 'true'
         type: boolean
-      create_pr:
-        description: 'Create Pull Request instead of direct commit'
+      auto_commit:
+        description: 'Auto commit changes'
         required: false
         default: 'true'
         type: boolean
 
 jobs:
-  generate:
+  update:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
       
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -60,56 +67,69 @@ jobs:
         run: |
           echo "Go version: $(go version)"
           echo "GOPROXY: $(go env GOPROXY)"
-          echo "GOSUMDB: $(go env GOSUMDB)"
-          echo "GO111MODULE: $(go env GO111MODULE)"
+          echo "Current branch: $(git branch --show-current)"
       
       - name: Backup old go.sum
+        id: backup
         run: |
           if [ -f go.sum ]; then
             cp go.sum go.sum.backup
-            echo "Backed up old go.sum"
-            echo "Old go.sum size: $(wc -l < go.sum) lines"
+            OLD_LINES=$(wc -l < go.sum)
+            echo "old_lines=$OLD_LINES" >> $GITHUB_OUTPUT
+            echo "Backed up old go.sum ($OLD_LINES lines)"
           else
+            echo "old_lines=0" >> $GITHUB_OUTPUT
             echo "No existing go.sum found"
           fi
       
-      - name: Remove old go.sum
-        run: rm -f go.sum
-      
-      - name: Download dependencies
-        run: go mod download
-      
-      - name: Tidy go.mod
-        run: go mod tidy
-      
-      - name: Verify dependencies
-        run: go mod verify
-      
-      - name: Check go.sum content
-        id: check
+      - name: Update go.sum
+        id: update
         run: |
+          # 删除旧文件
+          rm -f go.sum
+          
+          # 重新生成
+          echo "Downloading dependencies..."
+          go mod download 2>&1 | tee download.log
+          
+          echo "Tidying go.mod..."
+          go mod tidy 2>&1 | tee tidy.log
+          
+          echo "Verifying dependencies..."
+          go mod verify 2>&1 | tee verify.log
+          
+          # 检查是否生成
           if [ ! -f go.sum ]; then
             echo "❌ go.sum was not generated!"
             exit 1
           fi
           
-          LINES=$(wc -l < go.sum)
-          SIZE=$(du -h go.sum | cut -f1)
-          echo "✅ go.sum generated with $LINES lines ($SIZE)"
-          echo "lines=$LINES" >> $GITHUB_OUTPUT
-          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          NEW_LINES=$(wc -l < go.sum)
+          echo "new_lines=$NEW_LINES" >> $GITHUB_OUTPUT
+          echo "✅ go.sum generated with $NEW_LINES lines"
       
-      - name: Show go.sum content
+      - name: Check for changes
+        id: check
         run: |
-          echo "=== go.sum content ==="
-          cat go.sum
-          echo ""
-          echo "=== Checksum verification ==="
-          sha256sum go.sum
+          if [ -f go.sum.backup ]; then
+            if diff -q go.sum.backup go.sum > /dev/null; then
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "✅ No changes in go.sum"
+            else
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "📝 go.sum has changed"
+              echo "Changes:"
+              diff -u go.sum.backup go.sum | head -50 || true
+            fi
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "📝 New go.sum created"
+          fi
       
       - name: Test build
+        if: steps.check.outputs.changed == 'true'
         run: |
-          echo "🧪 Testing build..."
+          echo "🧪 Testing build with new go.sum..."
           go build -o /tmp/test_build main.go
           if [ -f /tmp/test_build ]; then
             echo "✅ Build successful"
@@ -119,86 +139,47 @@ jobs:
             exit 1
           fi
       
-      - name: Compare with old go.sum
-        id: compare
+      - name: Commit and push changes
+        if: steps.check.outputs.changed == 'true' && github.event.inputs.auto_commit == 'true'
         run: |
-          if [ -f go.sum.backup ]; then
-            if diff -q go.sum.backup go.sum > /dev/null; then
-              echo "✅ No changes in go.sum"
-              echo "changed=false" >> $GITHUB_OUTPUT
-            else
-              echo "📝 go.sum has changed"
-              echo "changed=true" >> $GITHUB_OUTPUT
-              echo "=== Changes ==="
-              diff -u go.sum.backup go.sum || true
-            fi
+          git add go.sum
+          git status
+          
+          # 检查是否有未提交的更改
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
           else
-            echo "📝 New go.sum created"
-            echo "changed=true" >> $GITHUB_OUTPUT
+            git commit -m "chore: auto update go.sum (${{ steps.update.outputs.new_lines }} lines)
+            
+            - Old lines: ${{ steps.backup.outputs.old_lines }}
+            - New lines: ${{ steps.update.outputs.new_lines }}
+            - Go version: ${{ github.event.inputs.go_version }}
+            
+            Generated by GitHub Actions"
+            
+            git push origin HEAD:${{ github.ref_name }}
+            echo "✅ Changes committed and pushed"
           fi
-      
-      - name: Create Pull Request
-        if: steps.compare.outputs.changed == 'true' && github.event.inputs.create_pr == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "chore: update go.sum (${{ steps.check.outputs.lines }} lines)"
-          title: "Update go.sum"
-          body: |
-            ## 📦 go.sum Update
-            
-            This PR updates `go.sum` with correct checksums.
-            
-            ### 📊 Changes
-            - **Lines:** ${{ steps.check.outputs.lines }}
-            - **Size:** ${{ steps.check.outputs.size }}
-            - **Go version:** ${{ github.event.inputs.go_version }}
-            - **Proxy:** ${{ github.event.inputs.use_proxy && 'enabled' || 'disabled' }}
-            
-            ### ✅ Verification
-            - [x] Dependencies downloaded
-            - [x] go.mod tidied
-            - [x] All modules verified
-            - [x] Build test passed
-            
-            ### 🔧 Generated with
-            ```bash
-            go version
-            go env GOPROXY
-            ```
-            
-            Please review and merge.
-          branch: update-go-sum-${{ github.run_id }}
-          base: ${{ github.ref_name }}
-          delete-branch: true
-          labels: dependencies,automated-pr
-      
-      - name: Commit directly
-        if: steps.compare.outputs.changed == 'true' && github.event.inputs.create_pr == 'false'
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update go.sum (${{ steps.check.outputs.lines }} lines)"
-          file_pattern: "go.sum"
-          branch: ${{ github.ref_name }}
       
       - name: Generate summary
         run: |
           cat << EOF >> $GITHUB_STEP_SUMMARY
-          ## ✅ go.sum Generation Complete
+          ## ✅ go.sum Auto Update Complete
           
           ### 📊 Statistics
           | Item | Value |
           |------|-------|
-          | Lines | ${{ steps.check.outputs.lines }} |
-          | Size | ${{ steps.check.outputs.size }} |
-          | Go Version | ${{ github.event.inputs.go_version }} |
-          | Changes | ${{ steps.compare.outputs.changed }} |
+          | Old lines | ${{ steps.backup.outputs.old_lines }} |
+          | New lines | ${{ steps.update.outputs.new_lines }} |
+          | Changes | ${{ steps.check.outputs.changed }} |
+          | Go version | ${{ github.event.inputs.go_version }} |
           
           ### 🔧 Environment
           - **Proxy:** ${{ github.event.inputs.use_proxy && 'Enabled' || 'Disabled' }}
           - **Cache Cleaned:** ${{ github.event.inputs.clean_cache && 'Yes' || 'No' }}
+          - **Auto Commit:** ${{ github.event.inputs.auto_commit && 'Yes' || 'No' }}
           - **Build Test:** ✅ Passed
           
-          ### 📝 Summary
-          ${{ steps.compare.outputs.changed == 'true' && 'go.sum has been updated' || 'go.sum is already up to date' }}
+          ${{ steps.check.outputs.changed == 'true' && '### ✅ go.sum has been updated and committed' || '### ✅ go.sum is already up to date' }}
           
           EOF
