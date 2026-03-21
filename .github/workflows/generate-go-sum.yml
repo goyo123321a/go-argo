@@ -1,4 +1,4 @@
-name: Generate and Verify go.sum
+name: Generate and Fix go.sum
 
 on:
   workflow_dispatch:
@@ -8,13 +8,8 @@ on:
         required: true
         default: '1.21'
         type: string
-      clean_cache:
-        description: 'Clean module cache'
-        required: false
-        default: 'true'
-        type: boolean
-      use_proxy:
-        description: 'Use Go proxy'
+      auto_commit:
+        description: 'Auto commit to main'
         required: false
         default: 'true'
         type: boolean
@@ -23,106 +18,82 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write  # 确保有写入权限
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # 获取完整历史
       
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ github.event.inputs.go_version }}
-          cache: true
       
-      - name: Configure Go environment
+      - name: Configure Git
         run: |
-          if [[ "${{ github.event.inputs.use_proxy }}" == "true" ]]; then
-            go env -w GOPROXY=https://goproxy.io,direct
-            echo "Using Go proxy: https://goproxy.io"
-          else
-            go env -w GOPROXY=direct
-            echo "Using direct proxy"
-          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Fix go.sum
+        run: |
+          echo "🔧 Fixing go.sum..."
           
-          if [[ "${{ github.event.inputs.clean_cache }}" == "true" ]]; then
-            go clean -modcache
-            echo "Cleaned module cache"
-          fi
-      
-      - name: Show Go environment
-        run: |
-          echo "Go version: $(go version)"
-          echo "GOPROXY: $(go env GOPROXY)"
-          echo "GOSUMDB: $(go env GOSUMDB)"
-      
-      - name: Backup old go.sum
-        run: |
+          # 备份旧文件
           if [ -f go.sum ]; then
-            cp go.sum go.sum.backup
-            echo "Backed up old go.sum"
-          fi
-      
-      - name: Remove old go.sum
-        run: rm -f go.sum
-      
-      - name: Download dependencies
-        run: go mod download
-      
-      - name: Tidy go.mod
-        run: go mod tidy
-      
-      - name: Verify dependencies
-        run: go mod verify
-      
-      - name: Check go.sum content
-        id: check
-        run: |
-          if [ ! -f go.sum ]; then
-            echo "❌ go.sum was not generated!"
-            exit 1
+            cp go.sum go.sum.old
           fi
           
-          LINES=$(wc -l < go.sum)
-          echo "✅ go.sum generated with $LINES lines"
-          echo "lines=$LINES" >> $GITHUB_OUTPUT
-      
-      - name: Show go.sum content
-        run: |
-          echo "=== go.sum content ==="
-          cat go.sum
-          echo ""
-          echo "=== Checksum verification ==="
-          sha256sum go.sum
+          # 清理并重新生成
+          go clean -modcache
+          rm -f go.sum
+          go mod download
+          go mod tidy
+          go mod verify
+          
+          # 显示变化
+          if [ -f go.sum.old ]; then
+            echo "=== Changes ==="
+            diff -u go.sum.old go.sum || true
+          fi
       
       - name: Test build
         run: |
-          echo "Testing build..."
-          go build -o /tmp/test_build main.go
-          if [ -f /tmp/test_build ]; then
+          echo "🧪 Testing build..."
+          go build -o /tmp/myapp main.go
+          if [ -f /tmp/myapp ]; then
             echo "✅ Build successful"
-            rm /tmp/test_build
+            rm /tmp/myapp
           else
             echo "❌ Build failed"
             exit 1
           fi
       
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "chore: update go.sum"
-          title: "Update go.sum"
-          body: |
-            This PR updates go.sum with correct checksums.
-            
-            **Changes:**
-            - Generated new go.sum with $(wc -l < go.sum) lines
-            - Verified all dependencies
-            - Build test passed
-            
-            **Go version:** ${{ github.event.inputs.go_version }}
-            **Proxy:** ${{ github.event.inputs.use_proxy && 'enabled' || 'disabled' }}
-          branch: update-go-sum
-          base: ${{ github.ref_name }}
-          delete-branch: true
+      - name: Commit and push directly
+        if: github.event.inputs.auto_commit == 'true'
+        run: |
+          # 检查是否有变化
+          if git diff --quiet go.sum; then
+            echo "No changes to go.sum"
+            exit 0
+          fi
+          
+          # 提交更改
+          git add go.sum
+          git commit -m "fix: regenerate go.sum with correct checksums"
+          
+          # 推送到 main 分支
+          git push origin main
+          echo "✅ Changes committed and pushed to main"
+      
+      - name: Show summary
+        run: |
+          echo "## ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**go.sum:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Lines: $(wc -l < go.sum)" >> $GITHUB_STEP_SUMMARY
+          echo "- Size: $(du -h go.sum | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build test:** ✅ Passed" >> $GITHUB_STEP_SUMMARY
