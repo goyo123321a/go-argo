@@ -6,7 +6,7 @@ FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 WORKDIR /app
 
 # 安装必要的构建工具
-RUN apk add --no-cache git ca-certificates tzdata upx
+RUN apk add --no-cache git ca-certificates tzdata
 
 # 复制 go.mod 和 go.sum 文件
 COPY go.mod go.sum ./
@@ -22,13 +22,16 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
 
-# 构建应用
+# 构建应用（添加错误处理）
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT} \
-    go build \
-    -ldflags="-w -s -extldflags '-static'" \
-    -o /app/myapp \
-    main.go && \
-    upx --best --lzma /app/myapp || true
+    go build -ldflags="-w -s -extldflags '-static'" -o /app/myapp main.go && \
+    ls -la /app/myapp && \
+    echo "Build successful"
+
+# 可选：压缩二进制文件（如果 upx 可用）
+RUN if command -v upx > /dev/null 2>&1; then \
+        upx --best --lzma /app/myapp || true; \
+    fi
 
 # 阶段2: 运行阶段
 FROM alpine:latest
@@ -54,8 +57,8 @@ WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/myapp /app/myapp
 
-# 复制伪装页面
-COPY --from=builder /app/index.html /app/index.html
+# 复制伪装页面（如果存在）
+COPY --from=builder /app/index.html /app/index.html 2>/dev/null || true
 
 # 创建必要的目录并设置权限
 RUN mkdir -p /app/tmp && \
