@@ -11,8 +11,9 @@ RUN apk add --no-cache git ca-certificates tzdata
 # 复制 go.mod 和 go.sum 文件
 COPY go.mod go.sum ./
 
-# 下载依赖
-RUN go mod download && go mod verify
+# 下载所有依赖（关键步骤）
+RUN go mod download
+RUN go mod verify
 
 # 复制源代码
 COPY . .
@@ -22,13 +23,14 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
 
-# 构建应用（添加错误处理）
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT} \
+# 构建应用（先下载依赖再构建）
+RUN go mod download && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${TARGETVARIANT} \
     go build -ldflags="-w -s -extldflags '-static'" -o /app/myapp main.go && \
     ls -la /app/myapp && \
     echo "Build successful"
 
-# 可选：压缩二进制文件（如果 upx 可用）
+# 可选：压缩二进制文件
 RUN if command -v upx > /dev/null 2>&1; then \
         upx --best --lzma /app/myapp || true; \
     fi
