@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,9 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/gorilla/websocket"
-	"gopkg.in/yaml.v3"
 )
 
 // 配置结构
