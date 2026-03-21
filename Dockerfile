@@ -57,8 +57,12 @@ RUN addgroup -g 1000 -S appuser && \
 # 复制可执行文件
 COPY --from=builder --chown=appuser:appuser /app/app /app/proxy-app
 
-# 复制配置文件（如果存在）- 修复版本
-COPY --chown=appuser:appuser index.html* /app/ 2>/dev/null || true
+# 复制配置文件 - 使用多行方式，避免 shell 条件判断
+RUN --mount=type=bind,from=builder,source=/app,target=/build \
+    if [ -f /build/index.html ]; then \
+        cp /build/index.html /app/ && \
+        chown appuser:appuser /app/index.html; \
+    fi
 
 # 创建必要的目录
 RUN mkdir -p /app/.tmp && \
