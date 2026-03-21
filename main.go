@@ -24,22 +24,22 @@ import (
 
 // 配置结构体
 type Config struct {
-	UploadURL   string `env:"UPLOAD_URL"`
-	ProjectURL  string `env:"PROJECT_URL"`
-	AutoAccess  bool   `env:"AUTO_ACCESS"`
-	FilePath    string `env:"FILE_PATH"`
-	SubPath     string `env:"SUB_PATH"`
-	Port        string `env:"SERVER_PORT"`
-	UUID        string `env:"UUID"`
-	NezhaServer string `env:"NEZHA_SERVER"`
-	NezhaPort   string `env:"NEZHA_PORT"`
-	NezhaKey    string `env:"NEZHA_KEY"`
-	ArgoDomain  string `env:"ARGO_DOMAIN"`
-	ArgoAuth    string `env:"ARGO_AUTH"`
-	ArgoPort    string `env:"ARGO_PORT"`
-	CFIP        string `env:"CFIP"`
-	CFPort      string `env:"CFPORT"`
-	Name        string `env:"NAME"`
+	UploadURL   string
+	ProjectURL  string
+	AutoAccess  bool
+	FilePath    string
+	SubPath     string
+	Port        string
+	UUID        string
+	NezhaServer string
+	NezhaPort   string
+	NezhaKey    string
+	ArgoDomain  string
+	ArgoAuth    string
+	ArgoPort    string
+	CFIP        string
+	CFPort      string
+	Name        string
 }
 
 // 进程管理器
@@ -273,7 +273,7 @@ func generateRandomName() string {
 func (app *App) setupRouter() {
 	router := gin.Default()
 
-	// 根路由 - 与 Node.js 版本行为一致
+	// 根路由 - 伪装页面
 	router.GET("/", func(c *gin.Context) {
 		// 尝试读取 index.html 文件
 		if data, err := os.ReadFile(app.indexPath); err == nil {
@@ -1002,7 +1002,6 @@ trojan://%s@%s:%s?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 	fmt.Printf("%s/sub.txt saved successfully\n", app.filePath)
 	fmt.Println(encoded)
 
-	// 添加订阅路由
 	app.router.GET("/"+app.subPath, func(c *gin.Context) {
 		c.String(http.StatusOK, encoded)
 	})
