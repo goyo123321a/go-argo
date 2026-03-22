@@ -1,45 +1,45 @@
-# 多阶段构建 Dockerfile
-FROM golang:1.21-alpine AS builder
+# 多阶段构建
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 
 WORKDIR /app
-
-# 设置 Go 代理（可选，加速下载）
-ENV GOPROXY=https://goproxy.cn,direct
 
 # 复制源代码
 COPY . .
 
+# 设置构建参数
+ARG TARGETOS
+ARG TARGETARCH
+
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o myapp .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -ldflags="-w -s" -o myapp .
 
-# 运行阶段
-FROM alpine:latest
-
-# 安装运行时依赖
-RUN apk add --no-cache ca-certificates tzdata wget && \
-    update-ca-certificates
-
-# 创建非 root 用户
-RUN addgroup -g 1000 -S appuser && \
-    adduser -u 1000 -S appuser -G appuser
+# 运行镜像
+FROM alpine:3.18
 
 WORKDIR /app
 
-# 从构建阶段复制二进制文件
-COPY --from=builder /app/myapp .
+# 安装运行时依赖
+RUN apk add --no-cache ca-certificates curl wget && \
+    update-ca-certificates
 
-# 复制 index.html 文件（如果存在）
-COPY --from=builder /app/index.html ./index.html 2>/dev/null || true
-
-# 创建临时目录
-RUN mkdir -p /app/.tmp && \
+# 创建用户和目录
+RUN addgroup -g 1000 -S appuser && \
+    adduser -u 1000 -S appuser -G appuser && \
+    mkdir -p /app/.tmp && \
     chown -R appuser:appuser /app
+
+# 复制文件
+COPY --from=builder --chown=appuser:appuser /app/myapp /app/
+COPY --chown=appuser:appuser index.html /app/
 
 USER appuser
 
+# 暴露端口
 EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
 
-CMD ["./myapp"]
+CMD ["/app/myapp"]
