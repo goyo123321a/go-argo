@@ -29,7 +29,7 @@ var (
 	autoAccess   = getEnvBool("AUTO_ACCESS", false)
 	filePath     = getEnv("FILE_PATH", ".tmp")
 	subPath      = getEnv("SUB_PATH", "sub")
-	port         = getEnvInt("SERVER_PORT", 3000)
+	port         = getEnvInt("SERVER_PORT", 7860)
 	uuid         = getEnv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
 	nezhaServer  = getEnv("NEZHA_SERVER", "")
 	nezhaPort    = getEnv("NEZHA_PORT", "")
