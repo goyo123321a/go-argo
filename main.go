@@ -951,7 +951,7 @@ func cleanFiles() {
 			}
 		}
 
-		log.Println("App is running")
+		log.Println("myapp is running")
 		log.Println("Thank you for using this script, enjoy!")
 	})
 }
@@ -1147,7 +1147,7 @@ func startHTTPServer() {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("Starting VPS Agent v%s (built: %s)", Version, BuildDate)
+	log.Printf("Starting myapp v%s (built: %s)", Version, BuildDate)
 
 	// 打印环境信息
 	log.Printf("Runtime: %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -1211,7 +1211,7 @@ func main() {
 	// 清理文件
 	cleanFiles()
 
-	log.Println("VPS Agent started successfully")
+	log.Println("myapp started successfully")
 	log.Println("Waiting for requests...")
 
 	// 保持程序运行
