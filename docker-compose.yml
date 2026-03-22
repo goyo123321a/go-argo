@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  myapp:
+    build: .
+    container_name: myapp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"   # HTTP 服务端口
+      - "8001:8001"   # Argo 隧道端口
+    environment:
+      # 必填配置
+      - UUID=${UUID:-9afd1229-b893-40c1-84dd-51e7ce204913}
+      
+      # 哪吒监控配置 (可选)
+      - NEZHA_SERVER=${NEZHA_SERVER:-}
+      - NEZHA_PORT=${NEZHA_PORT:-}
+      - NEZHA_KEY=${NEZHA_KEY:-}
+      
+      # Argo 隧道配置 (可选)
+      - ARGO_DOMAIN=${ARGO_DOMAIN:-}
+      - ARGO_AUTH=${ARGO_AUTH:-}
+      - ARGO_PORT=${ARGO_PORT:-8001}
+      
+      # 节点配置
+      - CFIP=${CFIP:-saas.sin.fan}
+      - CFPORT=${CFPORT:-443}
+      - NAME=${NAME:-}
+      
+      # 订阅上传配置
+      - UPLOAD_URL=${UPLOAD_URL:-}
+      - PROJECT_URL=${PROJECT_URL:-}
+      - AUTO_ACCESS=${AUTO_ACCESS:-false}
+      
+      # 其他配置
+      - FILE_PATH=.tmp
+      - SUB_PATH=sub
+      - SERVER_PORT=3000
+      
+    volumes:
+      # 可选：持久化数据
+      - ./data:/app/.tmp
+    networks:
+      - myapp-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  myapp-network:
+    driver: bridge
