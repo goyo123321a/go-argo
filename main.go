@@ -22,8 +22,8 @@ import (
 // 配置结构
 type XrayConfig struct {
 	Log struct {
-		Access  string `json:"access"`
-		Error   string `json:"error"`
+		Access   string `json:"access"`
+		Error    string `json:"error"`
 		Loglevel string `json:"loglevel"`
 	} `json:"log"`
 	DNS struct {
@@ -85,15 +85,22 @@ var (
 
 // 进程管理
 var (
-	nezhaProcess     *os.Process
-	xrayProcess      *os.Process
-	cloudflaredProcess *os.Process
-	processMutex     sync.Mutex
+	nezhaProcess        *os.Process
+	xrayProcess         *os.Process
+	cloudflaredProcess  *os.Process
+	processMutex        sync.Mutex
 )
 
 // 订阅缓存
-var subscriptionCache []byte
-var cacheMutex sync.RWMutex
+var (
+	subscriptionCache   []byte
+	cacheMutex          sync.RWMutex
+	subscriptionReady   bool
+	subscriptionMutex   sync.RWMutex
+)
+
+// 全局等待组
+var wg sync.WaitGroup
 
 func main() {
 	// 初始化路径
@@ -113,7 +120,9 @@ func main() {
 	time.Sleep(1 * time.Second)
 	
 	// 启动主流程
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := startServer(); err != nil {
 			fmt.Printf("Error in startServer: %v\n", err)
 		}
@@ -128,6 +137,7 @@ func main() {
 	<-sigChan
 	fmt.Println("\nReceived shutdown signal. Stopping processes...")
 	stopAllProcesses()
+	wg.Wait()
 	os.Exit(0)
 }
 
@@ -193,6 +203,17 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleSub(w http.ResponseWriter, r *http.Request) {
+	// 检查订阅是否就绪
+	subscriptionMutex.RLock()
+	ready := subscriptionReady
+	subscriptionMutex.RUnlock()
+	
+	if !ready {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte("Subscription is being generated, please wait 30 seconds..."))
+		return
+	}
+	
 	cacheMutex.RLock()
 	cache := subscriptionCache
 	cacheMutex.RUnlock()
@@ -236,18 +257,37 @@ func startServer() error {
 	}
 	
 	// 等待服务启动
+	fmt.Println("Waiting for services to start...")
 	time.Sleep(5 * time.Second)
 	
-	// 提取域名
-	if err := extractDomains(); err != nil {
+	// 提取域名（带重试）
+	fmt.Println("Attempting to get Argo domain...")
+	if err := extractDomainsWithRetry(10); err != nil {
 		fmt.Printf("Error extracting domains: %v\n", err)
+		return err
 	}
 	
 	// 添加自动访问任务
 	addVisitTask()
 	
 	fmt.Println("Server initialization completed")
+	fmt.Printf("Subscription URL: http://localhost:%s/%s\n", Port, SubPath)
+	
 	return nil
+}
+
+func extractDomainsWithRetry(maxRetries int) error {
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			fmt.Printf("Retry %d/%d to get Argo domain...\n", i, maxRetries)
+			time.Sleep(5 * time.Second)
+		}
+		
+		if err := extractDomains(); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to get Argo domain after %d retries", maxRetries)
 }
 
 func deleteNodes() {
@@ -507,7 +547,7 @@ func downloadFilesAndRun() error {
 	if err := runCloudflared(); err != nil {
 		fmt.Printf("Error running cloudflared: %v\n", err)
 	}
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 	
 	return nil
 }
@@ -608,7 +648,6 @@ uuid: %s`, NezhaKey, NezhaServer, nezhatls, UUID)
 	
 	fmt.Printf("%s is running\n", phpName)
 	
-	// 监控进程退出
 	go func() {
 		cmd.Wait()
 		processMutex.Lock()
@@ -786,91 +825,53 @@ func extractDomains() error {
 		return generateLinks(argoDomain)
 	}
 	
-	// 重试获取临时域名
-	maxRetries := 5
-	for retry := 0; retry < maxRetries; retry++ {
-		if retry > 0 {
-			fmt.Printf("Retrying to get Argo domain (%d/%d)...\n", retry, maxRetries)
-			time.Sleep(3 * time.Second)
-		}
-		
-		data, err := os.ReadFile(bootLogPath)
-		if err != nil {
-			continue
-		}
-		
-		content := string(data)
-		lines := strings.Split(content, "\n")
-		
-		for _, line := range lines {
-			// 查找 trycloudflare.com 域名
-			start := strings.Index(line, "https://")
-			if start == -1 {
-				continue
-			}
-			start += 8
-			
-			end := strings.Index(line[start:], " ")
-			if end == -1 {
-				end = strings.Index(line[start:], "/")
-			}
-			if end == -1 {
-				end = len(line) - start
-			}
-			
-			if end > 0 {
-				domain := line[start : start+end]
-				if strings.Contains(domain, "trycloudflare.com") {
-					argoDomain = domain
-					break
-				}
-			}
-		}
-		
-		if argoDomain != "" {
+	// 等待 boot.log 文件生成
+	for i := 0; i < 10; i++ {
+		if _, err := os.Stat(bootLogPath); err == nil {
 			break
 		}
+		time.Sleep(1 * time.Second)
+	}
+	
+	// 读取 boot.log 获取临时域名
+	data, err := os.ReadFile(bootLogPath)
+	if err != nil {
+		return fmt.Errorf("failed to read boot.log: %v", err)
+	}
+	
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	
+	for _, line := range lines {
+		// 查找 trycloudflare.com 域名
+		start := strings.Index(line, "https://")
+		if start == -1 {
+			continue
+		}
+		start += 8
 		
-		// 如果还没获取到，尝试重启 cloudflared
-		if retry == 1 {
-			fmt.Println("ArgoDomain not found, re-running bot to obtain ArgoDomain")
-			
-			// 删除 boot.log 文件
-			os.Remove(bootLogPath)
-			
-			// 停止现有的 cloudflared 进程
-			processMutex.Lock()
-			if cloudflaredProcess != nil {
-				cloudflaredProcess.Kill()
-				cloudflaredProcess = nil
+		end := strings.Index(line[start:], " ")
+		if end == -1 {
+			end = strings.Index(line[start:], "/")
+		}
+		if end == -1 {
+			end = strings.Index(line[start:], "\n")
+		}
+		if end == -1 {
+			end = len(line) - start
+		}
+		
+		if end > 0 {
+			domain := line[start : start+end]
+			if strings.Contains(domain, "trycloudflare.com") {
+				argoDomain = domain
+				break
 			}
-			processMutex.Unlock()
-			
-			time.Sleep(2 * time.Second)
-			
-			// 重新启动 cloudflared
-			args := []string{"tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2",
-				"--logfile", bootLogPath, "--loglevel", "info",
-				"--url", fmt.Sprintf("http://localhost:%d", ArgoPort)}
-			
-			cmd := exec.Command(botPath, args...)
-			cmd.Dir = FilePath
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			
-			if err := cmd.Start(); err == nil {
-				processMutex.Lock()
-				cloudflaredProcess = cmd.Process
-				processMutex.Unlock()
-				fmt.Printf("%s is running\n", botName)
-			}
-			
-			time.Sleep(3 * time.Second)
 		}
 	}
 	
 	if argoDomain == "" {
-		return fmt.Errorf("failed to get Argo domain after %d retries", maxRetries)
+		return fmt.Errorf("argo domain not found in boot.log")
 	}
 	
 	fmt.Println("ArgoDomain:", argoDomain)
@@ -922,21 +923,21 @@ func generateLinks(argoDomain string) error {
 	
 	// 生成 VMESS 配置
 	vmessConfig := map[string]interface{}{
-		"v":   "2",
-		"ps":  nodeName,
-		"add": CFIP,
+		"v":    "2",
+		"ps":   nodeName,
+		"add":  CFIP,
 		"port": CFPORT,
-		"id":  UUID,
-		"aid": "0",
-		"scy": "auto",
-		"net": "ws",
+		"id":   UUID,
+		"aid":  "0",
+		"scy":  "auto",
+		"net":  "ws",
 		"type": "none",
 		"host": argoDomain,
 		"path": "/vmess-argo?ed=2560",
-		"tls": "tls",
-		"sni": argoDomain,
+		"tls":  "tls",
+		"sni":  argoDomain,
 		"alpn": "",
-		"fp": "firefox",
+		"fp":   "firefox",
 	}
 	
 	vmessJSON, _ := json.Marshal(vmessConfig)
@@ -961,13 +962,20 @@ trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 	subscriptionCache = []byte(encoded)
 	cacheMutex.Unlock()
 	
+	// 标记订阅已就绪
+	subscriptionMutex.Lock()
+	subscriptionReady = true
+	subscriptionMutex.Unlock()
+	
 	if err := os.WriteFile(subPath, []byte(encoded), 0644); err != nil {
 		return err
 	}
 	
-	// 打印订阅内容（与 Node.js 版本一致）
-	fmt.Println(string(encoded))
-	fmt.Printf("%s/sub.txt saved successfully\n", FilePath)
+	// 打印订阅内容
+	fmt.Println("\n=== Subscription Generated ===")
+	fmt.Printf("Subscription (base64):\n%s\n", encoded)
+	fmt.Printf("\n%s/sub.txt saved successfully\n", FilePath)
+	fmt.Println("===============================\n")
 	
 	// 上传节点
 	uploadNodes()
