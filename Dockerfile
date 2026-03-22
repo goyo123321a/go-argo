@@ -28,6 +28,9 @@ WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/myapp .
 
+# 复制 index.html 文件（如果存在）
+COPY --from=builder /app/index.html ./index.html 2>/dev/null || true
+
 # 创建临时目录
 RUN mkdir -p /app/.tmp && \
     chown -R appuser:appuser /app
