@@ -69,6 +69,8 @@ var (
 	httpServer     *http.Server
 	subContent     string
 	subContentMutex sync.RWMutex
+	subReady       bool
+	subReadyMutex  sync.RWMutex
 )
 
 // Xray 配置结构体
@@ -776,31 +778,50 @@ func generateLinks(argoDomain string) error {
 	vmessJSON, _ := json.Marshal(vmess)
 	vmessBase64 := base64.StdEncoding.EncodeToString(vmessJSON)
 
-	subTxt := fmt.Sprintf(`
-vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560#%s
+	subTxt := fmt.Sprintf(`vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560#%s
 
 vmess://%s
 
-trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan-argo%%3Fed%%3D2560#%s
-`,
+trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan-argo%%3Fed%%3D2560#%s`,
 		uuid, cfip, cfport, argoDomain, argoDomain, nodeName,
 		vmessBase64,
 		uuid, cfip, cfport, argoDomain, argoDomain, nodeName)
 
+	// 去除首尾空白
+	subTxt = strings.TrimSpace(subTxt)
+
 	// Base64 编码
 	encoded := base64.StdEncoding.EncodeToString([]byte(subTxt))
-	log.Printf("Subscription generated (length: %d)", len(encoded))
+	log.Printf("Subscription generated successfully")
+	log.Printf("  - Raw length: %d bytes", len(subTxt))
+	log.Printf("  - Base64 length: %d bytes", len(encoded))
+	log.Printf("  - Node name: %s", nodeName)
+	log.Printf("  - Domain: %s", argoDomain)
 
 	// 保存到文件
 	if err := os.WriteFile(subFilePath, []byte(encoded), 0644); err != nil {
-		return err
+		return fmt.Errorf("failed to write sub file: %v", err)
 	}
-	log.Printf("%s/sub.txt saved successfully", filePath)
+	log.Printf("Subscription saved to: %s", subFilePath)
+
+	// 验证文件写入
+	if data, err := os.ReadFile(subFilePath); err == nil {
+		log.Printf("Verified file content length: %d bytes", len(data))
+	} else {
+		log.Printf("Warning: Failed to verify file: %v", err)
+	}
 
 	// 更新内存中的订阅内容
 	subContentMutex.Lock()
 	subContent = subTxt
 	subContentMutex.Unlock()
+	
+	// 标记订阅已就绪
+	subReadyMutex.Lock()
+	subReady = true
+	subReadyMutex.Unlock()
+	
+	log.Printf("Subscription cached in memory and marked as ready")
 
 	// 上传节点
 	uploadNodes()
@@ -955,44 +976,133 @@ func startHTTPServer() {
 
 	// 根路由
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 检查是否有 index.html
 		indexPath := "index.html"
 		if fileExists(indexPath) {
 			http.ServeFile(w, r, indexPath)
 			return
 		}
-
-		// 返回默认页面
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, "Hello world!<br><br>You can access /%s to get your nodes!", subPath)
 	})
 
-	// 订阅路由
+	// 订阅路由 - 返回 base64 编码的订阅
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
-		subContentMutex.RLock()
-		content := subContent
-		subContentMutex.RUnlock()
-
-		if content != "" {
-			// 返回 base64 编码的内容
-			encoded := base64.StdEncoding.EncodeToString([]byte(content))
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Write([]byte(encoded))
-			return
-		}
-
-		// 尝试从文件读取
-		if fileExists(subFilePath) {
-			fileContent, err := os.ReadFile(subFilePath)
-			if err == nil {
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				w.Write(fileContent)
-				return
+		log.Printf("Subscription request from %s", r.RemoteAddr)
+		
+		var responseData []byte
+		var source string
+		
+		// 优先从内存读取
+		subReadyMutex.RLock()
+		ready := subReady
+		subReadyMutex.RUnlock()
+		
+		if ready {
+			subContentMutex.RLock()
+			content := subContent
+			subContentMutex.RUnlock()
+			
+			if content != "" {
+				responseData = []byte(base64.StdEncoding.EncodeToString([]byte(content)))
+				source = "memory"
 			}
 		}
-
+		
+		// 如果内存中没有，从文件读取
+		if len(responseData) == 0 && fileExists(subFilePath) {
+			fileContent, err := os.ReadFile(subFilePath)
+			if err == nil && len(fileContent) > 0 {
+				responseData = fileContent
+				source = "file"
+			}
+		}
+		
+		// 返回响应
+		if len(responseData) > 0 {
+			log.Printf("Serving subscription from %s, size: %d bytes", source, len(responseData))
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
+			w.Write(responseData)
+			return
+		}
+		
+		log.Printf("No subscription data available")
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("Subscription not found"))
+		w.Write([]byte("Subscription not ready. Please wait for tunnel to establish."))
+	})
+
+	// 调试路由 - 查看原始订阅内容（未编码）
+	mux.HandleFunc("/sub-raw", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Raw subscription request from %s", r.RemoteAddr)
+		
+		var responseData []byte
+		
+		subReadyMutex.RLock()
+		ready := subReady
+		subReadyMutex.RUnlock()
+		
+		if ready {
+			subContentMutex.RLock()
+			content := subContent
+			subContentMutex.RUnlock()
+			
+			if content != "" {
+				responseData = []byte(content)
+			}
+		}
+		
+		if len(responseData) == 0 && fileExists(subFilePath) {
+			fileContent, err := os.ReadFile(subFilePath)
+			if err == nil {
+				// 解码文件内容
+				decoded, err := base64.StdEncoding.DecodeString(string(fileContent))
+				if err == nil {
+					responseData = decoded
+				}
+			}
+		}
+		
+		if len(responseData) > 0 {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Write(responseData)
+			return
+		}
+		
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("No subscription data"))
+	})
+
+	// 状态路由 - 查看服务状态
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		subReadyMutex.RLock()
+		ready := subReady
+		subReadyMutex.RUnlock()
+		
+		status := map[string]interface{}{
+			"version":         Version,
+			"build_date":      BuildDate,
+			"go_version":      runtime.Version(),
+			"sub_ready":       ready,
+			"sub_path":        subPath,
+			"sub_file_exists": fileExists(subFilePath),
+			"argo_port":       argoPort,
+			"http_port":       port,
+		}
+		
+		if ready {
+			subContentMutex.RLock()
+			status["sub_content_length"] = len(subContent)
+			subContentMutex.RUnlock()
+		}
+		
+		if fileExists(subFilePath) {
+			if info, err := os.Stat(subFilePath); err == nil {
+				status["sub_file_size"] = info.Size()
+			}
+		}
+		
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
 	})
 
 	// 版本信息路由
@@ -1020,9 +1130,14 @@ func startHTTPServer() {
 	}
 
 	log.Printf("HTTP server is running on port: %d", port)
+	log.Printf("Available endpoints:")
+	log.Printf("  - GET /%s        (Base64 encoded subscription)", subPath)
+	log.Printf("  - GET /%s-raw    (Plain text subscription)", subPath)
+	log.Printf("  - GET /status    (Service status)")
+	log.Printf("  - GET /version   (Version info)")
+	log.Printf("  - GET /health    (Health check)")
 	log.Printf("Version: %s, Build Date: %s", Version, BuildDate)
 
-	// 在 goroutine 中启动服务器
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
