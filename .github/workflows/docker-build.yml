@@ -6,7 +6,7 @@ on:
       image_name:
         description: '镜像名称'
         required: true
-        default: 'proxy-app'
+        default: 'go-app'
       image_tag:
         description: '镜像标签'
         required: false
