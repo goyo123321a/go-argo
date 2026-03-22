@@ -42,7 +42,7 @@ var (
 	nezhaKey     = getEnv("NEZHA_KEY", "")
 	argoDomain   = getEnv("ARGO_DOMAIN", "")
 	argoAuth     = getEnv("ARGO_AUTH", "")
-	argoPort     = getEnvInt("ARGO_PORT", 7860)
+	argoPort     = getEnvInt("ARGO_PORT", 8001)
 	cfip         = getEnv("CFIP", "saas.sin.fan")
 	cfport       = getEnvInt("CFPORT", 443)
 	name         = getEnv("NAME", "")
