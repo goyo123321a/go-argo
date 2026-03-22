@@ -3,43 +3,38 @@ FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-# 复制源代码
+ENV CGO_ENABLED=0
+ENV GOPROXY=https://goproxy.cn,direct
+
+COPY go.mod go.sum* ./
+RUN if [ -f go.mod ]; then go mod download; fi
+
 COPY . .
 
-# 设置构建参数
 ARG TARGETOS
 ARG TARGETARCH
 
-# 构建应用
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -ldflags="-w -s" -o myapp .
+RUN go build -ldflags="-w -s" -o myapp .
 
-# 运行镜像
 FROM alpine:3.18
 
-WORKDIR /app
-
-# 安装运行时依赖
-RUN apk add --no-cache ca-certificates curl wget && \
+RUN apk add --no-cache ca-certificates curl && \
     update-ca-certificates
 
-# 创建用户和目录
 RUN addgroup -g 1000 -S appuser && \
     adduser -u 1000 -S appuser -G appuser && \
-    mkdir -p /app/.tmp && \
-    chown -R appuser:appuser /app
+    mkdir -p /app/.tmp
 
-# 复制文件
 COPY --from=builder --chown=appuser:appuser /app/myapp /app/
-COPY --chown=appuser:appuser index.html /app/
+COPY --chown=appuser:appuser index.html /app/ 2>/dev/null || true
 
 USER appuser
 
-# 暴露端口
+WORKDIR /app
+
 EXPOSE 7860
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+    CMD curl -f http://localhost:7860/ || exit 1
 
 CMD ["/app/myapp"]
