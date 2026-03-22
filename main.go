@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -34,7 +33,7 @@ var (
 	uploadURL    = getEnv("UPLOAD_URL", "")
 	projectURL   = getEnv("PROJECT_URL", "")
 	autoAccess   = getEnvBool("AUTO_ACCESS", false)
-	filePath     = getEnv("FILE_PATH", "/app/tmp") // 使用容器挂载的卷
+	filePath     = getEnv("FILE_PATH", "/app/tmp")
 	subPath      = getEnv("SUB_PATH", "sub")
 	port         = getEnvInt("SERVER_PORT", 7860)
 	uuid         = getEnv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
@@ -43,7 +42,7 @@ var (
 	nezhaKey     = getEnv("NEZHA_KEY", "")
 	argoDomain   = getEnv("ARGO_DOMAIN", "")
 	argoAuth     = getEnv("ARGO_AUTH", "")
-	argoPort     = getEnvInt("ARGO_PORT", 8001)
+	argoPort     = getEnvInt("ARGO_PORT", 7860)
 	cfip         = getEnv("CFIP", "saas.sin.fan")
 	cfport       = getEnvInt("CFPORT", 443)
 	name         = getEnv("NAME", "")
@@ -381,7 +380,7 @@ func downloadFile(filePath, fileURL string) error {
 	if err := os.Chmod(filePath, 0775); err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
