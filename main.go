@@ -23,12 +23,18 @@ import (
 	"time"
 )
 
+// 版本信息（通过 ldflags 注入）
+var (
+	Version   = "dev"
+	BuildDate = "unknown"
+)
+
 // 环境变量配置
 var (
 	uploadURL    = getEnv("UPLOAD_URL", "")
 	projectURL   = getEnv("PROJECT_URL", "")
 	autoAccess   = getEnvBool("AUTO_ACCESS", false)
-	filePath     = getEnv("FILE_PATH", ".tmp")
+	filePath     = getEnv("FILE_PATH", "/app/tmp") // 使用容器挂载的卷
 	subPath      = getEnv("SUB_PATH", "sub")
 	port         = getEnvInt("SERVER_PORT", 7860)
 	uuid         = getEnv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
@@ -168,7 +174,7 @@ func getEnvInt(key string, defaultValue int) int {
 
 func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
-		return value == "true" || value == "1" || value == "True"
+		return value == "true" || value == "1" || value == "True" || value == "TRUE"
 	}
 	return defaultValue
 }
@@ -372,7 +378,10 @@ func downloadFile(filePath, fileURL string) error {
 	}
 
 	// 设置可执行权限
-	os.Chmod(filePath, 0775)
+	if err := os.Chmod(filePath, 0775); err != nil {
+		return err
+	}
+	
 	return nil
 }
 
@@ -748,21 +757,21 @@ func generateLinks(argoDomain string) error {
 	}
 
 	vmess := map[string]interface{}{
-		"v":   "2",
-		"ps":  nodeName,
-		"add": cfip,
+		"v":    "2",
+		"ps":   nodeName,
+		"add":  cfip,
 		"port": cfport,
-		"id":  uuid,
-		"aid": "0",
-		"scy": "auto",
-		"net": "ws",
+		"id":   uuid,
+		"aid":  "0",
+		"scy":  "auto",
+		"net":  "ws",
 		"type": "none",
 		"host": argoDomain,
 		"path": "/vmess-argo?ed=2560",
-		"tls": "tls",
-		"sni": argoDomain,
+		"tls":  "tls",
+		"sni":  argoDomain,
 		"alpn": "",
-		"fp":  "firefox",
+		"fp":   "firefox",
 	}
 
 	vmessJSON, _ := json.Marshal(vmess)
@@ -987,6 +996,16 @@ func startHTTPServer() {
 		w.Write([]byte("Subscription not found"))
 	})
 
+	// 版本信息路由
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"version":    Version,
+			"build_date": BuildDate,
+			"go_version": runtime.Version(),
+		})
+	})
+
 	// 健康检查路由
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1002,6 +1021,7 @@ func startHTTPServer() {
 	}
 
 	log.Printf("HTTP server is running on port: %d", port)
+	log.Printf("Version: %s, Build Date: %s", Version, BuildDate)
 
 	// 在 goroutine 中启动服务器
 	go func() {
@@ -1013,9 +1033,14 @@ func startHTTPServer() {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Starting VPS Agent...")
+	log.Printf("Starting VPS Agent v%s (built: %s)", Version, BuildDate)
 
-	// 初始化
+	// 打印环境信息
+	log.Printf("Runtime: %s/%s", runtime.GOOS, runtime.GOARCH)
+	log.Printf("Go Version: %s", runtime.Version())
+	log.Printf("Working directory: %s", filePath)
+
+	// 初始化目录
 	if err := ensureDir(filePath); err != nil {
 		log.Fatal("Failed to create directory:", err)
 	}
@@ -1038,6 +1063,9 @@ func main() {
 
 	// 启动 HTTP 服务（非阻塞）
 	startHTTPServer()
+
+	// 等待服务启动
+	time.Sleep(2 * time.Second)
 
 	// 启动前清理
 	deleteNodes()
@@ -1070,6 +1098,7 @@ func main() {
 	cleanFiles()
 
 	log.Println("VPS Agent started successfully")
+	log.Println("Waiting for requests...")
 
 	// 保持程序运行
 	select {}
