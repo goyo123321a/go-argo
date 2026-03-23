@@ -354,8 +354,6 @@ func getSystemArchitecture() string {
 
 // 下载文件
 func downloadFile(filePath, fileURL string) error {
-	log.Printf("Downloading %s from %s", filepath.Base(filePath), fileURL)
-
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(fileURL)
 	if err != nil {
@@ -475,7 +473,6 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 		processMutex.Lock()
 		processes = append(processes, cmd.Process)
 		processMutex.Unlock()
-		log.Printf("%s is running (PID: %d)", phpName, cmd.Process.Pid)
 		time.Sleep(1 * time.Second)
 	} else {
 		// 哪吒 v0
@@ -499,7 +496,6 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 		processMutex.Lock()
 		processes = append(processes, cmd.Process)
 		processMutex.Unlock()
-		log.Printf("%s is running (PID: %d)", npmName, cmd.Process.Pid)
 		time.Sleep(1 * time.Second)
 	}
 	return nil
@@ -521,7 +517,6 @@ func runXray() error {
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
-	log.Printf("%s is running (PID: %d)", webName, cmd.Process.Pid)
 	time.Sleep(1 * time.Second)
 	return nil
 }
@@ -529,7 +524,6 @@ func runXray() error {
 // 运行 Cloudflared
 func runCloudflared() error {
 	if !fileExists(botPath) {
-		log.Printf("Cloudflared binary not found: %s", botPath)
 		return nil
 	}
 
@@ -540,7 +534,6 @@ func runCloudflared() error {
 	} else if argoAuth != "" && strings.Contains(argoAuth, "TunnelSecret") {
 		tunnelYamlPath := filepath.Join(filePath, "tunnel.yml")
 		if !fileExists(tunnelYamlPath) {
-			log.Println("Tunnel YAML config not found, waiting...")
 			time.Sleep(2 * time.Second)
 		}
 		args = append(args, "--config", tunnelYamlPath, "run")
@@ -549,7 +542,6 @@ func runCloudflared() error {
 			"--url", fmt.Sprintf("http://localhost:%d", argoPort))
 	}
 
-	log.Printf("Starting cloudflared with args: %v", args)
 	cmd := exec.Command(botPath, args...)
 	cmd.Dir = filePath
 	cmd.Stdout = nil
@@ -564,7 +556,6 @@ func runCloudflared() error {
 				for {
 					n, err := stdout.Read(buf)
 					if n > 0 {
-						// 追加到日志文件
 						f, _ := os.OpenFile(bootLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 						if f != nil {
 							f.Write(buf[:n])
@@ -585,7 +576,6 @@ func runCloudflared() error {
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
-	log.Printf("%s is running (PID: %d)", botName, cmd.Process.Pid)
 	time.Sleep(2 * time.Second)
 	return nil
 }
@@ -598,46 +588,54 @@ func downloadFilesAndRun() error {
 	// 下载文件
 	for _, f := range files {
 		if err := downloadFile(f.path, f.url); err != nil {
-			log.Printf("Download %s failed: %v", f.url, err)
 			continue
 		}
-		log.Printf("Downloaded %s successfully", filepath.Base(f.path))
 	}
 
 	// 运行哪吒
 	if err := runNezha(); err != nil {
-		log.Printf("Nezha running error: %v", err)
+		// 忽略错误
 	}
 
 	// 运行 Xray
 	if err := runXray(); err != nil {
-		return fmt.Errorf("Xray running error: %v", err)
+		return fmt.Errorf("Xray运行失败: %v", err)
 	}
 
 	// 运行 Cloudflared
 	if err := runCloudflared(); err != nil {
-		log.Printf("Cloudflared running error: %v", err)
+		// 忽略错误
 	}
 
 	time.Sleep(5 * time.Second)
+
+	// 显示运行的进程信息
+	log.Printf("✓ 核心服务已启动")
+	log.Printf("  Xray: %s", webName)
+	log.Printf("  Tunnel: %s", botName)
+	if nezhaServer != "" && nezhaKey != "" {
+		if nezhaPort != "" {
+			log.Printf("  哪吒: %s", npmName)
+		} else {
+			log.Printf("  哪吒: %s", phpName)
+		}
+	}
+
 	return nil
 }
 
 // 配置 Argo 隧道
 func argoType() {
 	if argoAuth == "" || argoDomain == "" {
-		log.Println("ARGO_DOMAIN or ARGO_AUTH variable is empty, use quick tunnels")
 		return
 	}
 
 	if strings.Contains(argoAuth, "TunnelSecret") {
 		tunnelJsonPath := filepath.Join(filePath, "tunnel.json")
 		if err := os.WriteFile(tunnelJsonPath, []byte(argoAuth), 0644); err != nil {
-			log.Printf("Error writing tunnel.json: %v", err)
 			return
 		}
 
-		// 解析 tunnel ID
 		var tunnelConfig map[string]interface{}
 		if err := json.Unmarshal([]byte(argoAuth), &tunnelConfig); err == nil {
 			if tunnelID, ok := tunnelConfig["TunnelID"]; ok {
@@ -656,11 +654,8 @@ ingress:
 
 				tunnelYamlPath := filepath.Join(filePath, "tunnel.yml")
 				os.WriteFile(tunnelYamlPath, []byte(tunnelYaml), 0644)
-				log.Println("Tunnel YAML config generated")
 			}
 		}
-	} else {
-		log.Println("ARGO_AUTH mismatch TunnelSecret, use token connect to tunnel")
 	}
 }
 
@@ -787,41 +782,29 @@ trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 		vmessBase64,
 		uuid, cfip, cfport, argoDomain, argoDomain, nodeName)
 
-	// 去除首尾空白
 	subTxt = strings.TrimSpace(subTxt)
 
 	// Base64 编码
 	encoded := base64.StdEncoding.EncodeToString([]byte(subTxt))
-	log.Printf("Subscription generated successfully")
-	log.Printf("  - Raw length: %d bytes", len(subTxt))
-	log.Printf("  - Base64 length: %d bytes", len(encoded))
-	log.Printf("  - Node name: %s", nodeName)
-	log.Printf("  - Domain: %s", argoDomain)
 
 	// 保存到文件
 	if err := os.WriteFile(subFilePath, []byte(encoded), 0644); err != nil {
-		return fmt.Errorf("failed to write sub file: %v", err)
-	}
-	log.Printf("Subscription saved to: %s", subFilePath)
-
-	// 验证文件写入
-	if data, err := os.ReadFile(subFilePath); err == nil {
-		log.Printf("Verified file content length: %d bytes", len(data))
-	} else {
-		log.Printf("Warning: Failed to verify file: %v", err)
+		return fmt.Errorf("保存订阅文件失败: %v", err)
 	}
 
 	// 更新内存中的订阅内容
 	subContentMutex.Lock()
 	subContent = subTxt
 	subContentMutex.Unlock()
-	
+
 	// 标记订阅已就绪
 	subReadyMutex.Lock()
 	subReady = true
 	subReadyMutex.Unlock()
-	
-	log.Printf("Subscription cached in memory and marked as ready")
+
+	log.Printf("✓ 订阅已生成")
+	log.Printf("✓ 隧道域名: %s", argoDomain)
+	log.Printf("✓ 节点名称: %s", nodeName)
 
 	// 上传节点
 	uploadNodes()
@@ -843,12 +826,11 @@ func uploadNodes() {
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Post(uploadURL+"/api/add-subscriptions", "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
-			log.Printf("Upload subscription failed: %v", err)
 			return
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode == 200 {
-			log.Println("Subscription uploaded successfully")
+			log.Println("✓ 订阅已上传")
 		}
 	} else if uploadURL != "" && fileExists(listFilePath) {
 		content, err := os.ReadFile(listFilePath)
@@ -874,7 +856,7 @@ func uploadNodes() {
 		if err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode == 200 {
-				log.Println("Nodes uploaded successfully")
+				log.Println("✓ 节点已上传")
 			}
 		}
 	}
@@ -883,12 +865,10 @@ func uploadNodes() {
 // 提取临时隧道域名
 func extractDomains() error {
 	if argoAuth != "" && argoDomain != "" {
-		log.Println("Using fixed domain:", argoDomain)
 		return generateLinks(argoDomain)
 	}
 
 	// 等待 boot.log 生成
-	log.Println("Waiting for tunnel to start...")
 	time.Sleep(5 * time.Second)
 
 	// 尝试多次读取
@@ -897,41 +877,30 @@ func extractDomains() error {
 		if fileExists(bootLogPath) {
 			content, err := os.ReadFile(bootLogPath)
 			if err == nil {
-				// 查找 trycloudflare.com 域名
 				re := regexp.MustCompile(`https?://([^ ]*trycloudflare\.com)/?`)
 				matches := re.FindAllStringSubmatch(string(content), -1)
 				if len(matches) > 0 && len(matches[0]) > 1 {
 					argoDomain := matches[0][1]
-					log.Println("Found ArgoDomain:", argoDomain)
 					return generateLinks(argoDomain)
 				}
 			}
 		}
-		log.Printf("Waiting for domain (attempt %d/%d)...", i+1, maxRetries)
 		time.Sleep(3 * time.Second)
 	}
 
-	log.Println("ArgoDomain not found, continuing without tunnel domain")
 	return nil
 }
 
 // 添加自动访问任务
 func addVisitTask() {
 	if !autoAccess || projectURL == "" {
-		log.Println("Skipping adding automatic access task")
 		return
 	}
 
 	data := map[string]string{"url": projectURL}
 	jsonData, _ := json.Marshal(data)
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post("https://oooo.serv00.net/add-url", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("Add automatic access task failed: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	log.Println("Automatic access task added successfully")
+	client.Post("https://oooo.serv00.net/add-url", "application/json", bytes.NewBuffer(jsonData))
 }
 
 // 清理文件（90秒后）
@@ -946,19 +915,13 @@ func cleanFiles() {
 		}
 
 		for _, file := range filesToDelete {
-			if err := os.Remove(file); err == nil {
-				log.Printf("Deleted: %s", file)
-			}
+			os.Remove(file)
 		}
-
-		log.Println("myapp is running")
-		log.Println("Thank you for using this script, enjoy!")
 	})
 }
 
 // 停止所有进程
 func stopAllProcesses() {
-	log.Println("Stopping all processes...")
 	processMutex.Lock()
 	defer processMutex.Unlock()
 
@@ -982,137 +945,135 @@ func startHTTPServer() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, "Hello world!<br><br>You can access /%s to get your nodes!", subPath)
+		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
 
-	// 订阅路由 - 返回 base64 编码的订阅
+	// 订阅路由 - 返回 base64 编码的订阅（纯文本，不触发下载）
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Subscription request from %s", r.RemoteAddr)
-		
 		var responseData []byte
-		var source string
-		
-		// 优先从内存读取
+
 		subReadyMutex.RLock()
 		ready := subReady
 		subReadyMutex.RUnlock()
-		
+
 		if ready {
 			subContentMutex.RLock()
 			content := subContent
 			subContentMutex.RUnlock()
-			
+
 			if content != "" {
 				responseData = []byte(base64.StdEncoding.EncodeToString([]byte(content)))
-				source = "memory"
 			}
 		}
-		
-		// 如果内存中没有，从文件读取
+
 		if len(responseData) == 0 && fileExists(subFilePath) {
 			fileContent, err := os.ReadFile(subFilePath)
 			if err == nil && len(fileContent) > 0 {
 				responseData = fileContent
-				source = "file"
 			}
 		}
-		
-		// 返回响应
+
 		if len(responseData) > 0 {
-			log.Printf("Serving subscription from %s, size: %d bytes", source, len(responseData))
+			// 返回纯文本，不设置 Content-Disposition 就不会触发下载
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
 			w.Write(responseData)
 			return
 		}
-		
-		log.Printf("No subscription data available")
+
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("Subscription not ready. Please wait for tunnel to establish."))
+		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 调试路由 - 查看原始订阅内容（未编码）
-	mux.HandleFunc("/sub-raw", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Raw subscription request from %s", r.RemoteAddr)
-		
+	// 订阅下载路由 - 触发下载
+	mux.HandleFunc("/"+subPath+"/download", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
-		
+
 		subReadyMutex.RLock()
 		ready := subReady
 		subReadyMutex.RUnlock()
-		
+
 		if ready {
 			subContentMutex.RLock()
 			content := subContent
 			subContentMutex.RUnlock()
-			
+
+			if content != "" {
+				responseData = []byte(base64.StdEncoding.EncodeToString([]byte(content)))
+			}
+		}
+
+		if len(responseData) == 0 && fileExists(subFilePath) {
+			fileContent, err := os.ReadFile(subFilePath)
+			if err == nil && len(fileContent) > 0 {
+				responseData = fileContent
+			}
+		}
+
+		if len(responseData) > 0 {
+			// 设置下载头
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
+			w.Write(responseData)
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("订阅未就绪，请稍后重试"))
+	})
+
+	// 调试路由 - 查看原始订阅内容（未编码）
+	mux.HandleFunc("/"+subPath+"/raw", func(w http.ResponseWriter, r *http.Request) {
+		var responseData []byte
+
+		subReadyMutex.RLock()
+		ready := subReady
+		subReadyMutex.RUnlock()
+
+		if ready {
+			subContentMutex.RLock()
+			content := subContent
+			subContentMutex.RUnlock()
+
 			if content != "" {
 				responseData = []byte(content)
 			}
 		}
-		
+
 		if len(responseData) == 0 && fileExists(subFilePath) {
 			fileContent, err := os.ReadFile(subFilePath)
 			if err == nil {
-				// 解码文件内容
 				decoded, err := base64.StdEncoding.DecodeString(string(fileContent))
 				if err == nil {
 					responseData = decoded
 				}
 			}
 		}
-		
+
 		if len(responseData) > 0 {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Write(responseData)
 			return
 		}
-		
+
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("No subscription data"))
+		w.Write([]byte("无订阅数据"))
 	})
 
-	// 状态路由 - 查看服务状态
+	// 状态路由
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		subReadyMutex.RLock()
 		ready := subReady
 		subReadyMutex.RUnlock()
-		
+
 		status := map[string]interface{}{
-			"version":         Version,
-			"build_date":      BuildDate,
-			"go_version":      runtime.Version(),
-			"sub_ready":       ready,
-			"sub_path":        subPath,
-			"sub_file_exists": fileExists(subFilePath),
-			"argo_port":       argoPort,
-			"http_port":       port,
+			"status":    "running",
+			"version":   Version,
+			"sub_ready": ready,
+			"sub_path":  subPath,
 		}
-		
-		if ready {
-			subContentMutex.RLock()
-			status["sub_content_length"] = len(subContent)
-			subContentMutex.RUnlock()
-		}
-		
-		if fileExists(subFilePath) {
-			if info, err := os.Stat(subFilePath); err == nil {
-				status["sub_file_size"] = info.Size()
-			}
-		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status)
-	})
-
-	// 版本信息路由
-	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"version":    Version,
-			"build_date": BuildDate,
-			"go_version": runtime.Version(),
-		})
 	})
 
 	// 健康检查路由
@@ -1129,34 +1090,19 @@ func startHTTPServer() {
 		IdleTimeout:  30 * time.Second,
 	}
 
-	log.Printf("HTTP server is running on port: %d", port)
-	log.Printf("Available endpoints:")
-	log.Printf("  - GET /%s        (Base64 encoded subscription)", subPath)
-	log.Printf("  - GET /%s-raw    (Plain text subscription)", subPath)
-	log.Printf("  - GET /status    (Service status)")
-	log.Printf("  - GET /version   (Version info)")
-	log.Printf("  - GET /health    (Health check)")
-	log.Printf("Version: %s, Build Date: %s", Version, BuildDate)
-
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+			log.Printf("HTTP服务错误: %v", err)
 		}
 	}()
 }
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("Starting myapp v%s (built: %s)", Version, BuildDate)
-
-	// 打印环境信息
-	log.Printf("Runtime: %s/%s", runtime.GOOS, runtime.GOARCH)
-	log.Printf("Go Version: %s", runtime.Version())
-	log.Printf("Working directory: %s", filePath)
+	log.SetFlags(log.LstdFlags)
 
 	// 初始化目录
 	if err := ensureDir(filePath); err != nil {
-		log.Fatal("Failed to create directory:", err)
+		log.Fatal("创建目录失败:", err)
 	}
 	initPaths()
 
@@ -1165,21 +1111,22 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Received shutdown signal")
+		log.Println("正在关闭服务...")
 		stopAllProcesses()
 		if httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			httpServer.Shutdown(ctx)
 		}
+		log.Println("服务已关闭")
 		os.Exit(0)
 	}()
 
-	// 启动 HTTP 服务（非阻塞）
+	// 启动 HTTP 服务
 	startHTTPServer()
+	log.Printf("✓ HTTP服务已启动 (端口: %d)", port)
 
-	// 等待服务启动
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// 启动前清理
 	deleteNodes()
@@ -1190,19 +1137,17 @@ func main() {
 
 	// 生成 Xray 配置
 	if err := generateConfig(); err != nil {
-		log.Printf("Failed to generate config: %v", err)
-	} else {
-		log.Println("Xray config generated successfully")
+		log.Printf("⚠ 生成配置失败: %v", err)
 	}
 
 	// 下载并运行依赖
 	if err := downloadFilesAndRun(); err != nil {
-		log.Printf("Failed to download and run files: %v", err)
+		log.Printf("⚠ 启动失败: %v", err)
 	}
 
-	// 提取域名
+	// 提取域名并生成订阅
 	if err := extractDomains(); err != nil {
-		log.Printf("Failed to extract domains: %v", err)
+		log.Printf("⚠ 获取隧道域名失败: %v", err)
 	}
 
 	// 添加自动访问任务
@@ -1211,8 +1156,10 @@ func main() {
 	// 清理文件
 	cleanFiles()
 
-	log.Println("myapp started successfully")
-	log.Println("Waiting for requests...")
+	// 简化启动成功日志
+	log.Printf("✓ myapp 运行中")
+	log.Printf("  订阅: /%s", subPath)
+	log.Printf("  下载: /%s/download", subPath)
 
 	// 保持程序运行
 	select {}
