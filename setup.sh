@@ -314,7 +314,7 @@ main() {
     print_info "二进制文件名: $BIN_NAME"
     
     # 下载对应版本
-    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-linux-${ARCH}"
+    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-linux-${ARCH}"
     print_info "下载地址: $DOWNLOAD_URL"
     
     if ! download_file "$DOWNLOAD_URL" "$BIN_PATH"; then
