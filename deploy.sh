@@ -68,6 +68,23 @@ configure_env() {
     print_info "开始配置环境变量..."
     echo ""
 
+    # HTTP 服务端口配置
+    read -p "请输入 HTTP 服务端口 (留空使用默认 7860): " input_port
+    SERVER_PORT="${input_port:-7860}"
+    print_info "HTTP 服务端口: $SERVER_PORT"
+
+    # 订阅路径配置
+    read -p "请输入订阅路径 (留空使用默认 sub): " input_sub_path
+    SUB_PATH="${input_sub_path:-sub}"
+    print_info "订阅路径: $SUB_PATH"
+
+    # Argo 端口配置
+    read -p "请输入 Argo 隧道端口 (留空使用默认 8001): " input_argo_port
+    ARGO_PORT="${input_argo_port:-8001}"
+    print_info "Argo 隧道端口: $ARGO_PORT"
+
+    # UUID 配置
+    echo ""
     read -p "请输入 UUID (留空使用默认值): " input_uuid
     if [ -z "$input_uuid" ]; then
         UUID="9afd1229-b893-40c1-84dd-51e7ce204913"
@@ -76,6 +93,7 @@ configure_env() {
         UUID="$input_uuid"
     fi
 
+    # CFIP 和 CFPORT 配置
     echo ""
     read -p "请输入优选域名/IP (留空使用默认 saas.sin.fan): " input_cfip
     if [ -z "$input_cfip" ]; then
@@ -87,6 +105,7 @@ configure_env() {
     read -p "请输入端口 (留空使用默认 443): " input_cfport
     CFPORT="${input_cfport:-443}"
 
+    # 节点名称
     echo ""
     read -p "请输入节点名称 (留空使用自动获取): " input_name
     NAME="$input_name"
@@ -156,10 +175,10 @@ UUID=$UUID
 CFIP=$CFIP
 CFPORT=$CFPORT
 NAME=$NAME
-SERVER_PORT=7860
-ARGO_PORT=8001
+SERVER_PORT=$SERVER_PORT
+SUB_PATH=$SUB_PATH
+ARGO_PORT=$ARGO_PORT
 FILE_PATH=./tmp
-SUB_PATH=sub
 AUTO_ACCESS=$AUTO_ACCESS
 EOF
 
@@ -276,9 +295,10 @@ main() {
         echo ""
         print_info "=========================================="
         print_info "服务已启动，访问地址:"
-        print_info "  订阅地址: http://localhost:7860/sub"
-        print_info "  下载地址: http://localhost:7860/sub/download"
-        print_info "  状态查看: http://localhost:7860/status"
+        print_info "  订阅地址: http://localhost:$SERVER_PORT/$SUB_PATH"
+        print_info "  下载地址: http://localhost:$SERVER_PORT/$SUB_PATH/download"
+        print_info "  状态查看: http://localhost:$SERVER_PORT/status"
+        print_info "  Argo 端口: $ARGO_PORT (内部使用)"
         echo ""
 
         print_question "是否安装为系统服务 (systemd)? (y/n, 默认 n): "
@@ -296,6 +316,7 @@ main() {
         print_info "管理命令:"
         print_info "  查看日志: tail -f $(pwd)/myapp.log"
         print_info "  停止服务: kill $APP_PID"
+        print_info "  查看配置: cat $(pwd)/.env"
         print_info "=========================================="
     else
         print_error "myapp 启动失败，请检查日志"
