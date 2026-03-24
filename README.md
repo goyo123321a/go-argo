@@ -63,9 +63,6 @@ Telegram交流反馈群组：https://t.me/eooceu
 
 ```bash
 # 下载并运行一键部署脚本
-curl -sL https://raw.githubusercontent.com/goyo123321a/go-argo/main/deploy.sh | bash
-
-# 或直接运行
 bash <(curl -sL https://raw.githubusercontent.com/goyo123321a/go-argo/main/deploy.sh)
 
 脚本会自动：
