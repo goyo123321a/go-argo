@@ -62,11 +62,26 @@ jobs:
       - name: Display structure of downloaded files
         run: ls -R artifacts
 
+      - name: Set tag name
+        id: set_tag
+        run: |
+          if [ -z "${{ github.event.inputs.version_tag }}" ]; then
+            echo "tag_name=manual-build-${{ github.run_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag_name=${{ github.event.inputs.version_tag }}" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -z "${{ github.event.inputs.version_tag }}" ]; then
+            echo "release_name=Manual Build #${{ github.run_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "release_name=${{ github.event.inputs.version_tag }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.event.inputs.version_tag != '' && github.event.inputs.version_tag || format('manual-build-{0}', github.run_number) }}
-          name: Release ${{ github.event.inputs.version_tag != '' && github.event.inputs.version_tag || format('Manual Build #{0}', github.run_number) }}
+          tag_name: ${{ steps.set_tag.outputs.tag_name }}
+          name: ${{ steps.set_tag.outputs.release_name }}
           files: artifacts/**/*
           generate_release_notes: true
           draft: false
@@ -74,10 +89,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # 可选：仅构建不发布的 job
   build-only:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event.inputs.create_release != 'true'
+    if: github.event.inputs.create_release == 'false' || github.event.inputs.create_release == ''
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
