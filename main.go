@@ -156,6 +156,72 @@ type TrojanClient struct {
 	Password string `json:"password"`
 }
 
+// Sing-box 配置结构体
+type SingBoxConfig struct {
+	Log       SingBoxLog         `json:"log"`
+	Inbounds  []SingBoxInbound   `json:"inbounds"`
+	Outbounds []SingBoxOutbound  `json:"outbounds"`
+	Route     SingBoxRoute       `json:"route"`
+}
+
+type SingBoxLog struct {
+	Level string `json:"level"`
+}
+
+type SingBoxInbound struct {
+	Type         string                 `json:"type"`
+	Tag          string                 `json:"tag"`
+	Listen       string                 `json:"listen,omitempty"`
+	ListenPort   int                    `json:"listen_port,omitempty"`
+	Users        []SingBoxUser          `json:"users,omitempty"`
+	Transport    *SingBoxTransport      `json:"transport,omitempty"`
+	Multiplex    *SingBoxMultiplex      `json:"multiplex,omitempty"`
+	TLSA         *SingBoxTLSA           `json:"tls,omitempty"`
+}
+
+type SingBoxUser struct {
+	Name     string `json:"name,omitempty"`
+	UUID     string `json:"uuid,omitempty"`
+	Password string `json:"password,omitempty"`
+	Flow     string `json:"flow,omitempty"`
+}
+
+type SingBoxTransport struct {
+	Type    string            `json:"type"`
+	Path    string            `json:"path,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type SingBoxMultiplex struct {
+	Enabled        bool `json:"enabled"`
+	MaxConnections int  `json:"max_connections,omitempty"`
+}
+
+type SingBoxTLSA struct {
+	Enabled    bool   `json:"enabled"`
+	ServerName string `json:"server_name,omitempty"`
+	Insecure   bool   `json:"insecure,omitempty"`
+}
+
+type SingBoxOutbound struct {
+	Type       string             `json:"type"`
+	Tag        string             `json:"tag"`
+	Server     string             `json:"server,omitempty"`
+	ServerPort int                `json:"server_port,omitempty"`
+	Users      []SingBoxUser      `json:"users,omitempty"`
+	Transport  *SingBoxTransport  `json:"transport,omitempty"`
+	TLSA       *SingBoxTLSA       `json:"tls,omitempty"`
+}
+
+type SingBoxRoute struct {
+	Rules []SingBoxRule `json:"rules"`
+}
+
+type SingBoxRule struct {
+	Outbound string   `json:"outbound"`
+	Protocol []string `json:"protocol,omitempty"`
+}
+
 // 辅助函数
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
@@ -215,8 +281,23 @@ func initPaths() {
 	configPath = filepath.Join(filePath, "config.json")
 }
 
-// 生成 Xray 配置
-func generateConfig() error {
+// 检测操作系统
+func getSystemOS() string {
+	return runtime.GOOS
+}
+
+// 检测系统架构
+func getSystemArchitecture() string {
+	switch runtime.GOARCH {
+	case "arm", "arm64", "aarch64":
+		return "arm64"
+	default:
+		return "amd64"
+	}
+}
+
+// 生成 Xray 配置（Linux 系统）
+func generateXrayConfig() error {
 	config := XrayConfig{
 		Log: XrayLog{
 			Access:   "/dev/null",
@@ -342,17 +423,157 @@ func generateConfig() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// 获取系统架构
-func getSystemArchitecture() string {
-	switch runtime.GOARCH {
-	case "arm", "arm64", "aarch64":
-		return "arm"
-	default:
-		return "amd"
+// 生成 Sing-box 配置（FreeBSD 系统）
+func generateSingBoxConfig() error {
+	config := SingBoxConfig{
+		Log: SingBoxLog{
+			Level: "error",
+		},
+		Inbounds: []SingBoxInbound{
+			{
+				Type:       "mixed",
+				Tag:        "mixed-in",
+				Listen:     "::",
+				ListenPort: argoPort,
+			},
+			{
+				Type:       "vless",
+				Tag:        "vless-ws",
+				Listen:     "127.0.0.1",
+				ListenPort: 3002,
+				Users: []SingBoxUser{
+					{
+						UUID: uuid,
+						Flow: "xtls-rprx-vision",
+					},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/vless-argo",
+				},
+			},
+			{
+				Type:       "vmess",
+				Tag:        "vmess-ws",
+				Listen:     "127.0.0.1",
+				ListenPort: 3003,
+				Users: []SingBoxUser{
+					{
+						UUID: uuid,
+					},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/vmess-argo",
+				},
+			},
+			{
+				Type:       "trojan",
+				Tag:        "trojan-ws",
+				Listen:     "127.0.0.1",
+				ListenPort: 3004,
+				Users: []SingBoxUser{
+					{
+						Password: uuid,
+					},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/trojan-argo",
+				},
+			},
+		},
+		Outbounds: []SingBoxOutbound{
+			{
+				Type: "direct",
+				Tag:  "direct",
+			},
+			{
+				Type: "block",
+				Tag:  "block",
+			},
+		},
+		Route: SingBoxRoute{
+			Rules: []SingBoxRule{
+				{
+					Outbound: "block",
+					Protocol: []string{"quic"},
+				},
+			},
+		},
 	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0644)
 }
 
-// 下载文件
+// 生成配置（根据系统选择）
+func generateConfig() error {
+	if runtime.GOOS == "freebsd" {
+		return generateSingBoxConfig()
+	}
+	return generateXrayConfig()
+}
+
+// 获取需要下载的文件列表
+func getFilesForArchitecture(arch string) []struct {
+	path string
+	url  string
+} {
+	var files []struct{ path string; url string }
+	
+	osName := getSystemOS()
+	
+	// 根据操作系统选择下载源
+	if osName == "freebsd" {
+		// FreeBSD 使用 sing-box 替代 Xray
+		if arch == "arm64" {
+			files = append(files, struct{ path string; url string }{webPath, "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-freebsd-arm64.tar.gz"})
+		} else {
+			files = append(files, struct{ path string; url string }{webPath, "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-freebsd-amd64.tar.gz"})
+		}
+		
+		// Cloudflared 使用 Linux 版本（通过兼容层）
+		if arch == "arm64" {
+			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot-arm"})
+		} else {
+			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+		}
+	} else {
+		// Linux 系统使用原有下载源
+		if arch == "arm64" {
+			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
+			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
+		} else {
+			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
+			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+		}
+	}
+
+	// 哪吒监控
+	if nezhaServer != "" && nezhaKey != "" {
+		if nezhaPort != "" {
+			url := "https://amd64.ssss.nyc.mn/agent"
+			if arch == "arm64" {
+				url = "https://arm64.ssss.nyc.mn/agent"
+			}
+			files = append([]struct{ path string; url string }{{npmPath, url}}, files...)
+		} else {
+			url := "https://amd64.ssss.nyc.mn/v1"
+			if arch == "arm64" {
+				url = "https://arm64.ssss.nyc.mn/v1"
+			}
+			files = append([]struct{ path string; url string }{{phpPath, url}}, files...)
+		}
+	}
+
+	return files
+}
+
+// 下载文件（支持 tar.gz 解压）
 func downloadFile(filePath, fileURL string) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(fileURL)
@@ -365,15 +586,46 @@ func downloadFile(filePath, fileURL string) error {
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	out, err := os.Create(filePath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
+	// 检查是否是 tar.gz 文件
+	if strings.HasSuffix(fileURL, ".tar.gz") {
+		tempFile := filePath + ".tar.gz"
+		out, err := os.Create(tempFile)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		defer os.Remove(tempFile)
 
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return err
+		_, err = io.Copy(out, resp.Body)
+		if err != nil {
+			return err
+		}
+		out.Close()
+
+		// 解压 tar.gz
+		cmd := exec.Command("tar", "-xzf", tempFile, "-C", filepath.Dir(filePath))
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+
+		// 查找并移动 sing-box 二进制文件
+		singBoxPath := filepath.Join(filepath.Dir(filePath), "sing-box")
+		if fileExists(singBoxPath) {
+			if err := os.Rename(singBoxPath, filePath); err != nil {
+				return err
+			}
+		}
+	} else {
+		out, err := os.Create(filePath)
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+
+		_, err = io.Copy(out, resp.Body)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 设置可执行权限
@@ -384,38 +636,95 @@ func downloadFile(filePath, fileURL string) error {
 	return nil
 }
 
-// 获取需要下载的文件列表
-func getFilesForArchitecture(architecture string) []struct {
-	path string
-	url  string
-} {
-	var files []struct{ path string; url string }
-
-	if architecture == "arm" {
-		files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
-		files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
-	} else {
-		files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
-		files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+// 运行核心代理（Xray 或 Sing-box）
+func runCore() error {
+	if !fileExists(webPath) {
+		return fmt.Errorf("core binary not found: %s", webPath)
 	}
 
-	if nezhaServer != "" && nezhaKey != "" {
-		if nezhaPort != "" {
-			url := "https://amd64.ssss.nyc.mn/agent"
-			if architecture == "arm" {
-				url = "https://arm64.ssss.nyc.mn/agent"
-			}
-			files = append([]struct{ path string; url string }{{npmPath, url}}, files...)
-		} else {
-			url := "https://amd64.ssss.nyc.mn/v1"
-			if architecture == "arm" {
-				url = "https://arm64.ssss.nyc.mn/v1"
-			}
-			files = append([]struct{ path string; url string }{{phpPath, url}}, files...)
+	var cmd *exec.Cmd
+	
+	if runtime.GOOS == "freebsd" {
+		// FreeBSD 使用 sing-box
+		cmd = exec.Command(webPath, "run", "-c", configPath)
+	} else {
+		// Linux 使用 Xray
+		cmd = exec.Command(webPath, "-c", configPath)
+	}
+	
+	cmd.Dir = filePath
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	
+	processMutex.Lock()
+	processes = append(processes, cmd.Process)
+	processMutex.Unlock()
+	
+	time.Sleep(2 * time.Second)
+	return nil
+}
+
+// 运行 Cloudflared
+func runCloudflared() error {
+	if !fileExists(botPath) {
+		return nil
+	}
+
+	args := []string{"tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"}
+
+	if argoAuth != "" && len(argoAuth) >= 120 && len(argoAuth) <= 250 {
+		args = append(args, "run", "--token", argoAuth)
+	} else if argoAuth != "" && strings.Contains(argoAuth, "TunnelSecret") {
+		tunnelYamlPath := filepath.Join(filePath, "tunnel.yml")
+		if !fileExists(tunnelYamlPath) {
+			time.Sleep(2 * time.Second)
+		}
+		args = append(args, "--config", tunnelYamlPath, "run")
+	} else {
+		args = append(args, "--logfile", bootLogPath, "--loglevel", "info",
+			"--url", fmt.Sprintf("http://localhost:%d", argoPort))
+	}
+
+	cmd := exec.Command(botPath, args...)
+	cmd.Dir = filePath
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	// 对于临时隧道，需要捕获输出
+	if argoAuth == "" || argoDomain == "" {
+		stdout, err := cmd.StdoutPipe()
+		if err == nil {
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, err := stdout.Read(buf)
+					if n > 0 {
+						f, _ := os.OpenFile(bootLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+						if f != nil {
+							f.Write(buf[:n])
+							f.Close()
+						}
+					}
+					if err != nil {
+						break
+					}
+				}
+			}()
 		}
 	}
 
-	return files
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	processMutex.Lock()
+	processes = append(processes, cmd.Process)
+	processMutex.Unlock()
+	time.Sleep(2 * time.Second)
+	return nil
 }
 
 // 运行哪吒监控
@@ -501,85 +810,6 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 	return nil
 }
 
-// 运行 Xray
-func runXray() error {
-	if !fileExists(webPath) {
-		return fmt.Errorf("xray binary not found: %s", webPath)
-	}
-
-	cmd := exec.Command(webPath, "-c", configPath)
-	cmd.Dir = filePath
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	processMutex.Lock()
-	processes = append(processes, cmd.Process)
-	processMutex.Unlock()
-	time.Sleep(1 * time.Second)
-	return nil
-}
-
-// 运行 Cloudflared
-func runCloudflared() error {
-	if !fileExists(botPath) {
-		return nil
-	}
-
-	args := []string{"tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"}
-
-	if argoAuth != "" && len(argoAuth) >= 120 && len(argoAuth) <= 250 {
-		args = append(args, "run", "--token", argoAuth)
-	} else if argoAuth != "" && strings.Contains(argoAuth, "TunnelSecret") {
-		tunnelYamlPath := filepath.Join(filePath, "tunnel.yml")
-		if !fileExists(tunnelYamlPath) {
-			time.Sleep(2 * time.Second)
-		}
-		args = append(args, "--config", tunnelYamlPath, "run")
-	} else {
-		args = append(args, "--logfile", bootLogPath, "--loglevel", "info",
-			"--url", fmt.Sprintf("http://localhost:%d", argoPort))
-	}
-
-	cmd := exec.Command(botPath, args...)
-	cmd.Dir = filePath
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-
-	// 对于临时隧道，需要捕获输出
-	if argoAuth == "" || argoDomain == "" {
-		stdout, err := cmd.StdoutPipe()
-		if err == nil {
-			go func() {
-				buf := make([]byte, 4096)
-				for {
-					n, err := stdout.Read(buf)
-					if n > 0 {
-						f, _ := os.OpenFile(bootLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-						if f != nil {
-							f.Write(buf[:n])
-							f.Close()
-						}
-					}
-					if err != nil {
-						break
-					}
-				}
-			}()
-		}
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	processMutex.Lock()
-	processes = append(processes, cmd.Process)
-	processMutex.Unlock()
-	time.Sleep(2 * time.Second)
-	return nil
-}
-
 // 下载并运行所有依赖
 func downloadFilesAndRun() error {
 	arch := getSystemArchitecture()
@@ -588,6 +818,7 @@ func downloadFilesAndRun() error {
 	// 下载文件
 	for _, f := range files {
 		if err := downloadFile(f.path, f.url); err != nil {
+			log.Printf("⚠ 下载失败 %s: %v", f.url, err)
 			continue
 		}
 	}
@@ -597,9 +828,9 @@ func downloadFilesAndRun() error {
 		// 忽略错误
 	}
 
-	// 运行 Xray
-	if err := runXray(); err != nil {
-		return fmt.Errorf("Xray运行失败: %v", err)
+	// 运行核心代理
+	if err := runCore(); err != nil {
+		return fmt.Errorf("代理运行失败: %v", err)
 	}
 
 	// 运行 Cloudflared
@@ -611,7 +842,11 @@ func downloadFilesAndRun() error {
 
 	// 显示运行的进程信息
 	log.Printf("✓ 核心服务已启动")
-	log.Printf("  Xray: %s", webName)
+	if runtime.GOOS == "freebsd" {
+		log.Printf("  Sing-box: %s", webName)
+	} else {
+		log.Printf("  Xray: %s", webName)
+	}
 	log.Printf("  Tunnel: %s", botName)
 	if nezhaServer != "" && nezhaKey != "" {
 		if nezhaPort != "" {
@@ -1070,6 +1305,8 @@ func startHTTPServer() {
 			"version":   Version,
 			"sub_ready": ready,
 			"sub_path":  subPath,
+			"os":        runtime.GOOS,
+			"arch":      runtime.GOARCH,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1135,7 +1372,7 @@ func main() {
 	// 配置 Argo 隧道
 	argoType()
 
-	// 生成 Xray 配置
+	// 生成配置（根据操作系统自动选择 Xray 或 Sing-box）
 	if err := generateConfig(); err != nil {
 		log.Printf("⚠ 生成配置失败: %v", err)
 	}
@@ -1160,6 +1397,7 @@ func main() {
 	log.Printf("✓ myapp 运行中")
 	log.Printf("  订阅: /%s", subPath)
 	log.Printf("  下载: /%s/download", subPath)
+	log.Printf("  系统: %s/%s", runtime.GOOS, runtime.GOARCH)
 
 	// 保持程序运行
 	select {}
