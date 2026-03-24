@@ -17,6 +17,7 @@ print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 
 # 固定工作目录
 WORKDIR="$HOME/myapp"
+VERSION="v1.0.0.12"
 
 # 检测系统架构
 detect_arch() {
@@ -350,9 +351,51 @@ stop_existing() {
     fi
     
     # 杀掉所有 myapp 相关进程
-    if [ -f "$WORKDIR/.env" ]; then
-        source "$WORKDIR/.env"
-        pkill -f "$WORKDIR" 2>/dev/null || true
+    pkill -f "$WORKDIR/myapp" 2>/dev/null || true
+    
+    # 清理 tmp 目录中的旧文件
+    if [ -d "$WORKDIR/tmp" ]; then
+        print_info "清理 tmp 目录..."
+        rm -rf "$WORKDIR/tmp"/*
+    fi
+}
+
+# 显示服务状态
+show_status() {
+    local server_port=$1
+    local sub_path=$2
+    
+    echo ""
+    print_info "=========================================="
+    print_info "服务已启动"
+    print_info "  订阅地址: http://localhost:$server_port/$sub_path"
+    print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
+    print_info "  状态查看: http://localhost:$server_port/status"
+    echo ""
+    print_info "管理命令:"
+    print_info "  查看日志: tail -f $WORKDIR/myapp.log"
+    print_info "  查看 tmp: ls -la $WORKDIR/tmp"
+    print_info "  查看配置: cat $WORKDIR/.env"
+    print_info "  停止服务: kill \$(cat $WORKDIR/myapp.pid)"
+    print_info "  重启服务: $WORKDIR/myapp"
+    echo ""
+    
+    # 等待程序生成订阅
+    sleep 3
+    if [ -f "$WORKDIR/tmp/sub.txt" ]; then
+        print_info "✓ 订阅文件已生成"
+        print_info "  订阅内容预览:"
+        head -c 200 "$WORKDIR/tmp/sub.txt" 2>/dev/null || true
+        echo "..."
+    fi
+    
+    # 显示 Argo 隧道信息
+    if [ -f "$WORKDIR/tmp/boot.log" ]; then
+        ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1)
+        if [ -n "$ARGO_URL" ]; then
+            print_info "✓ Argo 隧道地址: $ARGO_URL"
+            print_info "  外网订阅: $ARGO_URL/$sub_path"
+        fi
     fi
 }
 
@@ -392,7 +435,7 @@ main() {
     # 下载对应版本
     if [ "$OS" = "freebsd" ]; then
         if [ "$ARCH" = "amd64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-freebsd-amd64"
+            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-amd64"
         else
             print_error "FreeBSD 系统暂不支持 arm64 架构"
             print_info "支持的架构: amd64"
@@ -400,9 +443,9 @@ main() {
         fi
     elif [ "$OS" = "linux" ]; then
         if [ "$ARCH" = "amd64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-linux-amd64"
+            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-amd64"
         elif [ "$ARCH" = "arm64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-linux-arm64"
+            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-arm64"
         else
             print_error "不支持的架构: $ARCH"
             exit 1
@@ -428,7 +471,7 @@ main() {
     # 显示文件信息
     print_info "文件信息:"
     ls -la "$BIN_PATH"
-    file "$BIN_PATH"
+    file "$BIN_PATH" 2>/dev/null || true
 
     # 配置文件
     if [ -f "$CONFIG_FILE" ]; then
@@ -443,19 +486,17 @@ main() {
         configure_env "$CONFIG_FILE"
     fi
 
-    # 创建必要目录（程序会在当前目录创建 tmp）
+    # 创建必要目录
     mkdir -p ./tmp
     print_info "已创建 tmp 目录"
 
-    # 启动程序
-    print_info "启动 myapp..."
-    
-    # 加载环境变量并启动
+    # 加载环境变量
     set -a
     source "$CONFIG_FILE"
     set +a
-    
-    # 后台运行
+
+    # 启动程序
+    print_info "启动 myapp..."
     nohup "$BIN_PATH" > ./myapp.log 2>&1 &
     
     APP_PID=$!
@@ -466,26 +507,17 @@ main() {
     print_info "配置文件: $CONFIG_FILE"
     print_info "临时目录: $(pwd)/tmp"
 
-    # 等待几秒检查进程
-    sleep 3
+    # 等待程序启动
+    sleep 5
 
+    # 检查进程
     if ps -p $APP_PID > /dev/null 2>&1; then
         print_info "✓ myapp 运行正常"
-        echo ""
-        print_info "=========================================="
-        print_info "服务已启动"
-        print_info "  订阅地址: http://localhost:$SERVER_PORT/$SUB_PATH"
-        print_info "  下载地址: http://localhost:$SERVER_PORT/$SUB_PATH/download"
-        print_info "  状态查看: http://localhost:$SERVER_PORT/status"
-        echo ""
-        print_info "管理命令:"
-        print_info "  查看日志: tail -f $(pwd)/myapp.log"
-        print_info "  查看 tmp: ls -la $(pwd)/tmp"
-        print_info "  停止服务: kill $APP_PID"
-        print_info "  重启服务: $BIN_PATH"
-        print_info "  查看配置: cat $CONFIG_FILE"
-        echo ""
-
+        
+        # 显示服务状态
+        show_status "$SERVER_PORT" "$SUB_PATH"
+        
+        # 询问是否安装系统服务
         print_question "是否安装为系统服务? (y/n, 默认 n): "
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
@@ -496,22 +528,22 @@ main() {
                 echo "  sudo service myapp start"
                 echo "  sudo service myapp stop"
                 echo "  sudo service myapp status"
+                echo "  sudo sysrc myapp_enable=YES  # 开机自启"
             else
                 echo "  sudo systemctl start myapp"
                 echo "  sudo systemctl stop myapp"
                 echo "  sudo systemctl status myapp"
-                echo "  sudo systemctl enable myapp"
+                echo "  sudo systemctl enable myapp  # 开机自启"
             fi
         fi
         
         print_info "=========================================="
         
-        # 显示 tmp 目录内容
-        sleep 2
-        if [ -d "./tmp" ]; then
-            print_info "tmp 目录内容:"
-            ls -la ./tmp/ 2>/dev/null || true
-        fi
+        # 显示最近的日志
+        echo ""
+        print_info "最近日志 (最后 10 行):"
+        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
+        
     else
         print_error "myapp 启动失败，请检查日志"
         echo "=== 日志内容 ==="
@@ -522,5 +554,11 @@ main() {
     fi
 }
 
-trap 'print_info "脚本被中断"; exit 1' INT TERM
+# 清理函数
+cleanup() {
+    print_info "脚本被中断"
+    exit 1
+}
+
+trap cleanup INT TERM
 main "$@"
