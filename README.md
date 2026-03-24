@@ -40,7 +40,7 @@ Telegram交流反馈群组：https://t.me/eooceu
 | NEZHA_KEY | 否 | - | 哪吒密钥 |
 | ARGO_DOMAIN | 否 | - | Argo固定隧道域名 |
 | ARGO_AUTH | 否 | - | Argo固定隧道密钥（Token或JSON） |
-| CFIP | 否 | saas.sin.fan | 节点优选域名或IP |
+| CFIP | 否 | cfip.dynv.dedyn.io | 节点优选域名或IP |
 | CFPORT | 否 | 443 | 节点端口 |
 | NAME | 否 | - | 节点名称前缀（留空自动获取ISP信息） |
 | FILE_PATH | 否 | /app/tmp | 运行目录 |
