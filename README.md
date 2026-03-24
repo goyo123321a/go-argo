@@ -35,7 +35,7 @@ Telegram交流反馈群组：https://t.me/eooceu
 | SERVER_PORT | 否 | 7860 | HTTP服务监听端口 |
 | ARGO_PORT | 否 | 8001 | Argo隧道端口（内部使用） |
 | UUID | 否 | 9afd1229-b893-40c1-84dd-51e7ce204913 | 用户UUID |
-| NEZHA_SERVER | 否 | - | 哪吒面板域名 |
+| NEZHA_SERVER | 否 | - | 哪吒面板域名（v1使用域名:端口） |
 | NEZHA_PORT | 否 | - | 哪吒端口（v0使用，v1留空） |
 | NEZHA_KEY | 否 | - | 哪吒密钥 |
 | ARGO_DOMAIN | 否 | - | Argo固定隧道域名 |
