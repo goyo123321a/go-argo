@@ -43,7 +43,7 @@ var (
 	argoDomain   = getEnv("ARGO_DOMAIN", "")
 	argoAuth     = getEnv("ARGO_AUTH", "")
 	argoPort     = getEnvInt("ARGO_PORT", 8001)
-	cfip         = getEnv("CFIP", "saas.sin.fan")
+	cfip         = getEnv("CFIP", "cfip.dynv.dedyn.io")
 	cfport       = getEnvInt("CFPORT", 443)
 	name         = getEnv("NAME", "")
 )
