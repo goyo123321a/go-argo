@@ -126,7 +126,7 @@ configure_env() {
     fi
 
     echo ""
-    read -p "请输入优选域名/IP (留空使用默认 saas.sin.fan): " input_cfip
+    read -p "请输入优选域名/IP (留空使用默认 cfip.dynv.dedyn.io): " input_cfip
     if [ -z "$input_cfip" ]; then
         CFIP="cfip.dynv.dedyn.io"
     else
