@@ -1,22 +1,33 @@
 name: Build and Release
 
 on:
-  push:
-    branches: [ main ]
-    tags: [ 'v*' ]          # 当推送 v1.0.0 等标签时触发
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      version_tag:
+        description: '版本标签 (例如: v1.0.0)'
+        required: false
+        type: string
+        default: ''
+      create_release:
+        description: '是否创建 Release'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write           # 允许创建 Release 和上传资产
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [linux, freebsd]
         arch: [amd64, arm64]
+        exclude:
+          # 排除 FreeBSD 的 arm64 架构
+          - os: freebsd
+            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,31 +37,58 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Build static binary for linux/${{ matrix.arch }}
+      - name: Build static binary for ${{ matrix.os }}/${{ matrix.arch }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
-            go build -ldflags="-s -w" -o myapp-linux-${{ matrix.arch }}
+          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
+            go build -ldflags="-s -w" -o myapp-${{ matrix.os }}-${{ matrix.arch }}
 
       - name: Upload artifact (always)
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-linux-${{ matrix.arch }}
-          path: myapp-linux-${{ matrix.arch }}
+          name: myapp-${{ matrix.os }}-${{ matrix.arch }}
+          path: myapp-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 30
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')   # 仅当推送 tag 时运行
+    if: ${{ github.event.inputs.create_release == 'true' }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event.inputs.version_tag == '' && format('manual-build-{0}', github.run_number) || github.event.inputs.version_tag }}
+          name: Release ${{ github.event.inputs.version_tag == '' && format('Manual Build #{0}', github.run_number) || github.event.inputs.version_tag }}
           files: artifacts/**/*
           generate_release_notes: true
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 可选：仅构建不发布的 job
+  build-only:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.create_release == 'false' || github.event.inputs.create_release == '' }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List built artifacts
+        run: |
+          echo "构建完成，文件列表："
+          ls -lh artifacts/**/*
+          echo ""
+          echo "如需下载，请访问："
+          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
