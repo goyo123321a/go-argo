@@ -296,6 +296,21 @@ echo $! > myapp.pid
 /health 健康检查 返回"OK"
 /version 版本信息 返回版本和构建信息
 
+## 主要修改说明
+
+| 修改项 | 说明 |
+|--------|------|
+| **项目名称** | nodejs-argo → go-argo |
+| **环境变量** | PORT → SERVER_PORT，添加 SUB_PATH、ARGO_PORT 等 |
+| **部署方式** | npm全局安装 → 二进制文件下载 |
+| **架构检测** | 自动检测 amd64/arm64 |
+| **订阅端点** | 添加 /sub/download、/sub/raw、/status、/health |
+| **后台运行** | 添加 nohup、screen、tmux、PM2、systemd 等多种方式 |
+| **Docker部署** | 添加 Docker 和 Docker Compose 部署说明 |
+| **一键脚本** | 添加 curl 一键部署命令 |
+
+这个 README 完整适配了 Go 项目的特点，包括二进制部署、多架构支持、Docker 容器化等特性。
+
 📚 更多信息
 
 · GitHub仓库
