@@ -52,7 +52,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.create_release == 'true' }}
+    if: github.event.inputs.create_release == 'true'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -65,8 +65,8 @@ jobs:
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.event.inputs.version_tag == '' && format('manual-build-{0}', github.run_number) || github.event.inputs.version_tag }}
-          name: Release ${{ github.event.inputs.version_tag == '' && format('Manual Build #{0}', github.run_number) || github.event.inputs.version_tag }}
+          tag_name: ${{ github.event.inputs.version_tag != '' && github.event.inputs.version_tag || format('manual-build-{0}', github.run_number) }}
+          name: Release ${{ github.event.inputs.version_tag != '' && github.event.inputs.version_tag || format('Manual Build #{0}', github.run_number) }}
           files: artifacts/**/*
           generate_release_notes: true
           draft: false
@@ -74,11 +74,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 可选：仅构建不发布的 job
   build-only:
     needs: build
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.create_release == 'false' || github.event.inputs.create_release == '' }}
+    if: github.event.inputs.create_release != 'true'
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
