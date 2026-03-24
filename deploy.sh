@@ -275,7 +275,7 @@ main() {
         exit 1
     fi
     
-    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-${OS}-${ARCH}"
+    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-${OS}-${ARCH}"
     print_info "下载地址: $DOWNLOAD_URL"
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
 
