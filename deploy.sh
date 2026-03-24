@@ -17,7 +17,13 @@ print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 
 # 生成随机6位数文件名
 generate_random_name() {
-    cat /dev/urandom 2>/dev/null | tr -dc 'a-z' | fold -w 6 | head -n 1 || echo "abcdef"
+    if command -v openssl &> /dev/null; then
+        openssl rand -hex 3 2>/dev/null | tr -d '\n' || echo "abcdef"
+    elif [ -f /dev/urandom ]; then
+        cat /dev/urandom 2>/dev/null | tr -dc 'a-z' | fold -w 6 | head -n 1 || echo "abcdef"
+    else
+        echo "abcdef"
+    fi
 }
 
 # 检测系统架构
@@ -36,9 +42,44 @@ detect_os() {
     OS=$(uname -s)
     case $OS in
         Linux) echo "linux" ;;
+        FreeBSD) echo "freebsd" ;;
         Darwin) echo "darwin" ;;
         *) print_error "不支持的操作系统: $OS"; exit 1 ;;
     esac
+}
+
+# 检查并安装依赖 (针对 FreeBSD)
+check_dependencies() {
+    local os=$1
+    
+    if [ "$os" = "freebsd" ]; then
+        # 检查 pkg 是否存在
+        if ! command -v pkg &> /dev/null; then
+            print_error "FreeBSD 系统未安装 pkg 包管理器"
+            print_info "请先运行: pkg bootstrap"
+            exit 1
+        fi
+        
+        # 检查并安装 curl 或 wget
+        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+            print_info "正在安装 curl..."
+            pkg install -y curl || {
+                print_error "安装 curl 失败"
+                exit 1
+            }
+        fi
+        
+        # 检查 bash 是否为最新版本
+        if [ -z "$BASH_VERSION" ] || [ "${BASH_VERSION:0:1}" -lt 4 ]; then
+            print_warn "建议安装 bash 4.0+ 以获得更好的脚本体验"
+        fi
+    elif [ "$os" = "linux" ]; then
+        # Linux 依赖检查
+        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+            print_error "请安装 curl 或 wget"
+            exit 1
+        fi
+    fi
 }
 
 # 下载文件
@@ -207,7 +248,88 @@ EOF
     print_info "配置文件已保存: $config_file"
 }
 
-# 创建 systemd 服务
+# 创建服务 (支持 FreeBSD rc.d 和 Linux systemd)
+create_service() {
+    local bin_path=$1
+    local config_file=$2
+    local service_name=$3
+    local os=$4
+    
+    if [ "$os" = "freebsd" ]; then
+        create_rc_service "$bin_path" "$config_file" "$service_name"
+    else
+        create_systemd_service "$bin_path" "$config_file" "$service_name"
+    fi
+}
+
+# 创建 FreeBSD rc.d 服务
+create_rc_service() {
+    local bin_path=$1
+    local config_file=$2
+    local service_name=$3
+    local rc_file="/usr/local/etc/rc.d/${service_name}"
+    local current_user=$(whoami)
+    local current_dir=$(pwd)
+    
+    # 转换相对路径为绝对路径
+    bin_path=$(realpath "$bin_path" 2>/dev/null || readlink -f "$bin_path" 2>/dev/null || echo "$bin_path")
+    config_file=$(realpath "$config_file" 2>/dev/null || readlink -f "$config_file" 2>/dev/null || echo "$config_file")
+    
+    cat > "$rc_file" << EOF
+#!/bin/sh
+#
+# PROVIDE: $service_name
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="$service_name"
+rcvar="${service_name}_enable"
+
+load_rc_config "\$name"
+
+: \${${service_name}_enable:=NO}
+: \${${service_name}_user:=$current_user}
+: \${${service_name}_dir:=$current_dir}
+
+pidfile="/var/run/\${name}.pid"
+command="/usr/sbin/daemon"
+command_args="-p \${pidfile} -u \${${service_name}_user} -f ${bin_path}"
+
+start_precmd="export_env"
+stop_postcmd="cleanup_pid"
+
+export_env() {
+    # 加载环境变量
+    if [ -f "${config_file}" ]; then
+        . "${config_file}"
+        export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH ARGO_PORT FILE_PATH AUTO_ACCESS
+        [ -n "\$ARGO_DOMAIN" ] && export ARGO_DOMAIN
+        [ -n "\$ARGO_AUTH" ] && export ARGO_AUTH
+        [ -n "\$NEZHA_SERVER" ] && export NEZHA_SERVER
+        [ -n "\$NEZHA_PORT" ] && export NEZHA_PORT
+        [ -n "\$NEZHA_KEY" ] && export NEZHA_KEY
+        [ -n "\$UPLOAD_URL" ] && export UPLOAD_URL
+        [ -n "\$PROJECT_URL" ] && export PROJECT_URL
+    fi
+}
+
+cleanup_pid() {
+    rm -f "\${pidfile}"
+}
+
+run_rc_command "\$1"
+EOF
+    
+    chmod +x "$rc_file"
+    print_info "FreeBSD rc.d 服务文件已创建: $rc_file"
+    print_info "启用服务命令:"
+    echo "  sudo sysrc ${service_name}_enable=YES"
+    echo "  sudo service ${service_name} start"
+}
+
+# 创建 Linux systemd 服务
 create_systemd_service() {
     local bin_path=$1
     local config_file=$2
@@ -250,6 +372,9 @@ main() {
     print_info "操作系统: $OS"
     print_info "系统架构: $ARCH"
     echo ""
+    
+    # 检查并安装依赖
+    check_dependencies "$OS"
 
     # 创建临时目录
     WORK_DIR="./myapp_$(date +%s)"
@@ -262,8 +387,14 @@ main() {
     BIN_PATH="./$BIN_NAME"
     print_info "二进制文件名: $BIN_NAME"
 
-    # 下载对应版本
-    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-linux-${ARCH}"
+    # 下载对应版本 (FreeBSD 不支持 arm64)
+    if [ "$OS" = "freebsd" ] && [ "$ARCH" = "arm64" ]; then
+        print_error "FreeBSD 系统暂不支持 arm64 架构"
+        print_info "支持的架构: amd64"
+        exit 1
+    fi
+    
+    DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-${OS}-${ARCH}"
     print_info "下载地址: $DOWNLOAD_URL"
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
 
@@ -280,7 +411,12 @@ main() {
 
     # 启动程序
     print_info "正在启动 myapp..."
-    nohup "$BIN_PATH" > ./myapp.log 2>&1 &
+    if [ "$OS" = "freebsd" ]; then
+        # FreeBSD 使用不同的后台运行方式
+        env $(cat "$CONFIG_FILE" | grep -v '^#' | xargs) nohup "$BIN_PATH" > ./myapp.log 2>&1 &
+    else
+        nohup "$BIN_PATH" > ./myapp.log 2>&1 &
+    fi
     APP_PID=$!
     echo $APP_PID > ./myapp.pid
 
@@ -301,15 +437,11 @@ main() {
         print_info "  Argo 端口: $ARGO_PORT (内部使用)"
         echo ""
 
-        print_question "是否安装为系统服务 (systemd)? (y/n, 默认 n): "
+        print_question "是否安装为系统服务? (y/n, 默认 n): "
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
             SERVICE_NAME="myapp_${BIN_NAME}"
-            create_systemd_service "$(pwd)/$BIN_NAME" "$(pwd)/.env" "$SERVICE_NAME"
-            print_info "请执行以下命令启用服务:"
-            echo "  sudo systemctl daemon-reload"
-            echo "  sudo systemctl enable ${SERVICE_NAME}.service"
-            echo "  sudo systemctl start ${SERVICE_NAME}.service"
+            create_service "$(pwd)/$BIN_NAME" "$(pwd)/.env" "$SERVICE_NAME" "$OS"
         fi
 
         print_info "=========================================="
@@ -317,6 +449,9 @@ main() {
         print_info "  查看日志: tail -f $(pwd)/myapp.log"
         print_info "  停止服务: kill $APP_PID"
         print_info "  查看配置: cat $(pwd)/.env"
+        if [ "$OS" = "freebsd" ]; then
+            print_info "  进程管理: ps aux | grep $BIN_NAME"
+        fi
         print_info "=========================================="
     else
         print_error "myapp 启动失败，请检查日志"
