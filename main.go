@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,7 +24,7 @@ import (
 	"time"
 )
 
-// 版本信息（通过 ldflags 注入）
+// 版本信息
 var (
 	Version   = "dev"
 	BuildDate = "unknown"
@@ -62,6 +64,8 @@ var (
 	listFilePath string
 	bootLogPath  string
 	configPath   string
+	certPath     string
+	keyPath      string
 
 	// 进程管理
 	processes      []*os.Process
@@ -159,6 +163,7 @@ type TrojanClient struct {
 // Sing-box 配置结构体
 type SingBoxConfig struct {
 	Log       SingBoxLog         `json:"log"`
+	DNS       SingBoxDNS         `json:"dns"`
 	Inbounds  []SingBoxInbound   `json:"inbounds"`
 	Outbounds []SingBoxOutbound  `json:"outbounds"`
 	Route     SingBoxRoute       `json:"route"`
@@ -168,6 +173,15 @@ type SingBoxLog struct {
 	Level string `json:"level"`
 }
 
+type SingBoxDNS struct {
+	Servers []SingBoxDNSServer `json:"servers"`
+}
+
+type SingBoxDNSServer struct {
+	Address string `json:"address"`
+	Tag     string `json:"tag,omitempty"`
+}
+
 type SingBoxInbound struct {
 	Type         string                 `json:"type"`
 	Tag          string                 `json:"tag"`
@@ -175,8 +189,8 @@ type SingBoxInbound struct {
 	ListenPort   int                    `json:"listen_port,omitempty"`
 	Users        []SingBoxUser          `json:"users,omitempty"`
 	Transport    *SingBoxTransport      `json:"transport,omitempty"`
-	Multiplex    *SingBoxMultiplex      `json:"multiplex,omitempty"`
-	TLSA         *SingBoxTLSA           `json:"tls,omitempty"`
+	TLS          *SingBoxTLS            `json:"tls,omitempty"`
+	Sniffing     *SingBoxSniffing       `json:"sniffing,omitempty"`
 }
 
 type SingBoxUser struct {
@@ -187,20 +201,24 @@ type SingBoxUser struct {
 }
 
 type SingBoxTransport struct {
-	Type    string            `json:"type"`
-	Path    string            `json:"path,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Type               string            `json:"type"`
+	Path               string            `json:"path,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	EarlyDataHeaderName string           `json:"early_data_header_name,omitempty"`
 }
 
-type SingBoxMultiplex struct {
-	Enabled        bool `json:"enabled"`
-	MaxConnections int  `json:"max_connections,omitempty"`
+type SingBoxTLS struct {
+	Enabled    bool     `json:"enabled"`
+	CertPath   string   `json:"certificate_path,omitempty"`
+	KeyPath    string   `json:"key_path,omitempty"`
+	ServerName string   `json:"server_name,omitempty"`
+	Insecure   bool     `json:"insecure,omitempty"`
+	ALPN       []string `json:"alpn,omitempty"`
 }
 
-type SingBoxTLSA struct {
-	Enabled    bool   `json:"enabled"`
-	ServerName string `json:"server_name,omitempty"`
-	Insecure   bool   `json:"insecure,omitempty"`
+type SingBoxSniffing struct {
+	Enabled      bool     `json:"enabled"`
+	DestOverride []string `json:"dest_override"`
 }
 
 type SingBoxOutbound struct {
@@ -210,11 +228,12 @@ type SingBoxOutbound struct {
 	ServerPort int                `json:"server_port,omitempty"`
 	Users      []SingBoxUser      `json:"users,omitempty"`
 	Transport  *SingBoxTransport  `json:"transport,omitempty"`
-	TLSA       *SingBoxTLSA       `json:"tls,omitempty"`
+	TLS        *SingBoxTLS        `json:"tls,omitempty"`
 }
 
 type SingBoxRoute struct {
 	Rules []SingBoxRule `json:"rules"`
+	Final string        `json:"final"`
 }
 
 type SingBoxRule struct {
@@ -279,24 +298,152 @@ func initPaths() {
 	listFilePath = filepath.Join(filePath, "list.txt")
 	bootLogPath = filepath.Join(filePath, "boot.log")
 	configPath = filepath.Join(filePath, "config.json")
+	certPath = filepath.Join(filePath, "cert.pem")
+	keyPath = filepath.Join(filePath, "private.key")
 }
 
-// 检测操作系统
-func getSystemOS() string {
-	return runtime.GOOS
-}
-
-// 检测系统架构
-func getSystemArchitecture() string {
-	switch runtime.GOARCH {
-	case "arm", "arm64", "aarch64":
-		return "arm64"
-	default:
-		return "amd64"
+// 生成 TLS 证书
+func generateTLS() error {
+	cmd := exec.Command("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-out", keyPath)
+	if err := cmd.Run(); err != nil {
+		return err
 	}
+	
+	cmd = exec.Command("openssl", "req", "-new", "-x509", "-days", "3650", "-key", keyPath, "-out", certPath,
+		"-subj", fmt.Sprintf("/CN=localhost"))
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	
+	return nil
 }
 
-// 生成 Xray 配置（Linux 系统）
+// 获取可用 IP
+func getAvailableIP() string {
+	hostname, _ := os.Hostname()
+	ips, err := net.LookupIP(hostname)
+	if err == nil && len(ips) > 0 {
+		for _, ip := range ips {
+			if ipv4 := ip.To4(); ipv4 != nil {
+				return ipv4.String()
+			}
+		}
+	}
+	return "0.0.0.0"
+}
+
+// 生成 Sing-box 配置（支持 vless、vmess、trojan 三种协议）
+func generateSingBoxConfig() error {
+	availableIP := getAvailableIP()
+	
+	config := SingBoxConfig{
+		Log: SingBoxLog{
+			Level: "error",
+		},
+		DNS: SingBoxDNS{
+			Servers: []SingBoxDNSServer{
+				{Address: "8.8.8.8"},
+				{Tag: "local", Address: "local"},
+			},
+		},
+		Inbounds: []SingBoxInbound{
+			// VLESS + TCP (主入口，用于 Argo 隧道)
+			{
+				Type:       "vless",
+				Tag:        "vless-tcp-in",
+				Listen:     "::",
+				ListenPort: argoPort,
+				Users: []SingBoxUser{
+					{UUID: uuid, Flow: "xtls-rprx-vision"},
+				},
+				TLS: &SingBoxTLS{
+					Enabled: false,
+				},
+			},
+			// VLESS + WS (用于 Argo 隧道)
+			{
+				Type:       "vless",
+				Tag:        "vless-ws-in",
+				Listen:     "127.0.0.1",
+				ListenPort: 3002,
+				Users: []SingBoxUser{
+					{UUID: uuid, Flow: "xtls-rprx-vision"},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/vless-argo",
+				},
+				Sniffing: &SingBoxSniffing{
+					Enabled:      true,
+					DestOverride: []string{"http", "tls"},
+				},
+			},
+			// VMess + WS (用于 Argo 隧道)
+			{
+				Type:       "vmess",
+				Tag:        "vmess-ws-in",
+				Listen:     "127.0.0.1",
+				ListenPort: 3003,
+				Users: []SingBoxUser{
+					{UUID: uuid},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/vmess-argo",
+				},
+				Sniffing: &SingBoxSniffing{
+					Enabled:      true,
+					DestOverride: []string{"http", "tls"},
+				},
+			},
+			// Trojan + WS (用于 Argo 隧道)
+			{
+				Type:       "trojan",
+				Tag:        "trojan-ws-in",
+				Listen:     "127.0.0.1",
+				ListenPort: 3004,
+				Users: []SingBoxUser{
+					{Password: uuid},
+				},
+				Transport: &SingBoxTransport{
+					Type: "ws",
+					Path: "/trojan-argo",
+				},
+				Sniffing: &SingBoxSniffing{
+					Enabled:      true,
+					DestOverride: []string{"http", "tls"},
+				},
+			},
+		},
+		Outbounds: []SingBoxOutbound{
+			{
+				Type: "direct",
+				Tag:  "direct",
+			},
+			{
+				Type: "block",
+				Tag:  "block",
+			},
+		},
+		Route: SingBoxRoute{
+			Rules: []SingBoxRule{
+				{
+					Outbound: "direct",
+					Protocol: []string{"http", "tls"},
+				},
+			},
+			Final: "direct",
+		},
+	}
+	
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, data, 0644)
+}
+
+// 生成 Xray 配置（Linux 系统，支持 fallback）
 func generateXrayConfig() error {
 	config := XrayConfig{
 		Log: XrayLog{
@@ -317,7 +464,6 @@ func generateXrayConfig() error {
 					},
 					Decryption: "none",
 					Fallbacks: []Fallback{
-						{Dest: 3001},
 						{Path: "/vless-argo", Dest: 3002},
 						{Path: "/vmess-argo", Dest: 3003},
 						{Path: "/trojan-argo", Dest: 3004},
@@ -325,19 +471,6 @@ func generateXrayConfig() error {
 				},
 				StreamSettings: XrayStreamSettings{
 					Network: "tcp",
-				},
-			},
-			{
-				Port:     3001,
-				Listen:   "127.0.0.1",
-				Protocol: "vless",
-				Settings: VlessSettings{
-					Clients:    []VlessClient{{ID: uuid}},
-					Decryption: "none",
-				},
-				StreamSettings: XrayStreamSettings{
-					Network:  "tcp",
-					Security: "none",
 				},
 			},
 			{
@@ -423,95 +556,13 @@ func generateXrayConfig() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// 生成 Sing-box 配置（FreeBSD 系统）
-func generateSingBoxConfig() error {
-	config := SingBoxConfig{
-		Log: SingBoxLog{
-			Level: "error",
-		},
-		Inbounds: []SingBoxInbound{
-			{
-				Type:       "mixed",
-				Tag:        "mixed-in",
-				Listen:     "::",
-				ListenPort: argoPort,
-			},
-			{
-				Type:       "vless",
-				Tag:        "vless-ws",
-				Listen:     "127.0.0.1",
-				ListenPort: 3002,
-				Users: []SingBoxUser{
-					{
-						UUID: uuid,
-						Flow: "xtls-rprx-vision",
-					},
-				},
-				Transport: &SingBoxTransport{
-					Type: "ws",
-					Path: "/vless-argo",
-				},
-			},
-			{
-				Type:       "vmess",
-				Tag:        "vmess-ws",
-				Listen:     "127.0.0.1",
-				ListenPort: 3003,
-				Users: []SingBoxUser{
-					{
-						UUID: uuid,
-					},
-				},
-				Transport: &SingBoxTransport{
-					Type: "ws",
-					Path: "/vmess-argo",
-				},
-			},
-			{
-				Type:       "trojan",
-				Tag:        "trojan-ws",
-				Listen:     "127.0.0.1",
-				ListenPort: 3004,
-				Users: []SingBoxUser{
-					{
-						Password: uuid,
-					},
-				},
-				Transport: &SingBoxTransport{
-					Type: "ws",
-					Path: "/trojan-argo",
-				},
-			},
-		},
-		Outbounds: []SingBoxOutbound{
-			{
-				Type: "direct",
-				Tag:  "direct",
-			},
-			{
-				Type: "block",
-				Tag:  "block",
-			},
-		},
-		Route: SingBoxRoute{
-			Rules: []SingBoxRule{
-				{
-					Outbound: "block",
-					Protocol: []string{"quic"},
-				},
-			},
-		},
-	}
-
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(configPath, data, 0644)
-}
-
 // 生成配置（根据系统选择）
 func generateConfig() error {
+	// 生成 TLS 证书
+	if err := generateTLS(); err != nil {
+		log.Printf("⚠ 生成证书失败: %v", err)
+	}
+	
 	if runtime.GOOS == "freebsd" {
 		return generateSingBoxConfig()
 	}
@@ -557,11 +608,11 @@ func getFilesForArchitecture(arch string) []struct {
 } {
 	var files []struct{ path string; url string }
 	
-	osName := getSystemOS()
+	osName := runtime.GOOS
 	
 	// 根据操作系统选择下载源
 	if osName == "freebsd" {
-		// FreeBSD 使用 sing-box 替代 Xray
+		// FreeBSD 使用 sing-box
 		if arch == "arm64" {
 			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/sb"})
 			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
@@ -570,7 +621,7 @@ func getFilesForArchitecture(arch string) []struct {
 			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
 		}
 	} else {
-		// Linux 系统使用原有下载源
+		// Linux 系统使用 Xray
 		if arch == "arm64" {
 			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
 			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
@@ -600,7 +651,7 @@ func getFilesForArchitecture(arch string) []struct {
 	return files
 }
 
-// 运行核心代理（Xray 或 Sing-box）
+// 运行核心代理
 func runCore() error {
 	if !fileExists(webPath) {
 		return fmt.Errorf("core binary not found: %s", webPath)
@@ -779,17 +830,32 @@ func downloadFilesAndRun() error {
 	arch := getSystemArchitecture()
 	files := getFilesForArchitecture(arch)
 
+	log.Printf("开始下载依赖文件...")
+	
 	// 下载文件
 	for _, f := range files {
+		if fileExists(f.path) {
+			log.Printf("文件已存在: %s", f.path)
+			continue
+		}
+		
+		log.Printf("正在下载: %s", f.url)
 		if err := downloadFile(f.path, f.url); err != nil {
 			log.Printf("⚠ 下载失败 %s: %v", f.url, err)
 			continue
 		}
 	}
 
+	// 验证核心二进制文件是否存在
+	if !fileExists(webPath) {
+		return fmt.Errorf("核心二进制文件不存在: %s", webPath)
+	}
+	
+	log.Printf("✓ 核心二进制文件已就绪: %s", webPath)
+
 	// 运行哪吒
 	if err := runNezha(); err != nil {
-		// 忽略错误
+		log.Printf("⚠ 哪吒监控启动失败: %v", err)
 	}
 
 	// 运行核心代理
@@ -799,7 +865,7 @@ func downloadFilesAndRun() error {
 
 	// 运行 Cloudflared
 	if err := runCloudflared(); err != nil {
-		// 忽略错误
+		log.Printf("⚠ Cloudflared启动失败: %v", err)
 	}
 
 	time.Sleep(5 * time.Second)
@@ -821,6 +887,16 @@ func downloadFilesAndRun() error {
 	}
 
 	return nil
+}
+
+// 获取系统架构
+func getSystemArchitecture() string {
+	switch runtime.GOARCH {
+	case "arm", "arm64", "aarch64":
+		return "arm64"
+	default:
+		return "amd64"
+	}
 }
 
 // 配置 Argo 隧道
@@ -951,9 +1027,14 @@ func generateLinks(argoDomain string) error {
 		nodeName = name + "-" + isp
 	}
 
+	// VLESS 链接
+	vlessLink := fmt.Sprintf("vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560#%s",
+		uuid, cfip, cfport, argoDomain, argoDomain, nodeName+"-vless")
+
+	// VMess 链接
 	vmess := map[string]interface{}{
 		"v":    "2",
-		"ps":   nodeName,
+		"ps":   nodeName + "-vmess",
 		"add":  cfip,
 		"port": cfport,
 		"id":   uuid,
@@ -968,20 +1049,14 @@ func generateLinks(argoDomain string) error {
 		"alpn": "",
 		"fp":   "firefox",
 	}
-
 	vmessJSON, _ := json.Marshal(vmess)
-	vmessBase64 := base64.StdEncoding.EncodeToString(vmessJSON)
+	vmessLink := "vmess://" + base64.StdEncoding.EncodeToString(vmessJSON)
 
-	subTxt := fmt.Sprintf(`vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560#%s
+	// Trojan 链接
+	trojanLink := fmt.Sprintf("trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan-argo%%3Fed%%3D2560#%s",
+		uuid, cfip, cfport, argoDomain, argoDomain, nodeName+"-trojan")
 
-vmess://%s
-
-trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan-argo%%3Fed%%3D2560#%s`,
-		uuid, cfip, cfport, argoDomain, argoDomain, nodeName,
-		vmessBase64,
-		uuid, cfip, cfport, argoDomain, argoDomain, nodeName)
-
-	subTxt = strings.TrimSpace(subTxt)
+	subTxt := fmt.Sprintf("%s\n\n%s\n\n%s", vlessLink, vmessLink, trojanLink)
 
 	// Base64 编码
 	encoded := base64.StdEncoding.EncodeToString([]byte(subTxt))
@@ -1004,6 +1079,7 @@ trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 	log.Printf("✓ 订阅已生成")
 	log.Printf("✓ 隧道域名: %s", argoDomain)
 	log.Printf("✓ 节点名称: %s", nodeName)
+	log.Printf("✓ 支持协议: VLESS, VMess, Trojan")
 
 	// 上传节点
 	uploadNodes()
@@ -1102,10 +1178,10 @@ func addVisitTask() {
 	client.Post("https://oooo.serv00.net/add-url", "application/json", bytes.NewBuffer(jsonData))
 }
 
-// 清理文件（90秒后）
+// 清理文件
 func cleanFiles() {
 	time.AfterFunc(90*time.Second, func() {
-		filesToDelete := []string{bootLogPath, configPath, webPath, botPath}
+		filesToDelete := []string{bootLogPath, configPath}
 
 		if nezhaPort != "" {
 			filesToDelete = append(filesToDelete, npmPath)
@@ -1147,7 +1223,7 @@ func startHTTPServer() {
 		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
 
-	// 订阅路由 - 返回 base64 编码的订阅（纯文本，不触发下载）
+	// 订阅路由 - 返回 base64 编码的订阅
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1173,7 +1249,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 返回纯文本，不设置 Content-Disposition 就不会触发下载
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Write(responseData)
 			return
@@ -1183,7 +1258,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 订阅下载路由 - 触发下载
+	// 订阅下载路由
 	mux.HandleFunc("/"+subPath+"/download", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1209,7 +1284,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 设置下载头
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
 			w.Write(responseData)
@@ -1220,7 +1294,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 调试路由 - 查看原始订阅内容（未编码）
+	// 原始订阅路由
 	mux.HandleFunc("/"+subPath+"/raw", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1271,13 +1345,14 @@ func startHTTPServer() {
 			"sub_path":  subPath,
 			"os":        runtime.GOOS,
 			"arch":      runtime.GOARCH,
+			"protocols": []string{"vless", "vmess", "trojan"},
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(status)
 	})
 
-	// 健康检查路由
+	// 健康检查
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -1336,7 +1411,7 @@ func main() {
 	// 配置 Argo 隧道
 	argoType()
 
-	// 生成配置（根据操作系统自动选择 Xray 或 Sing-box）
+	// 生成配置（根据操作系统自动选择）
 	if err := generateConfig(); err != nil {
 		log.Printf("⚠ 生成配置失败: %v", err)
 	}
@@ -1357,11 +1432,17 @@ func main() {
 	// 清理文件
 	cleanFiles()
 
-	// 简化启动成功日志
+	// 启动成功日志
 	log.Printf("✓ myapp 运行中")
 	log.Printf("  订阅: /%s", subPath)
 	log.Printf("  下载: /%s/download", subPath)
 	log.Printf("  系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+	log.Printf("  协议: VLESS, VMess, Trojan")
+	if runtime.GOOS == "freebsd" {
+		log.Printf("  核心: Sing-box (支持 VLESS/VMess/Trojan)")
+	} else {
+		log.Printf("  核心: Xray (支持 VLESS/VMess/Trojan)")
+	}
 
 	// 保持程序运行
 	select {}
