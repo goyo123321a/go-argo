@@ -15,16 +15,8 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 
-# 生成随机6位数文件名
-generate_random_name() {
-    if command -v openssl &> /dev/null; then
-        openssl rand -hex 3 2>/dev/null | tr -d '\n' || echo "myapp"
-    elif [ -f /dev/urandom ]; then
-        cat /dev/urandom 2>/dev/null | tr -dc 'a-z0-9' | fold -w 6 | head -n 1 || echo "myapp"
-    else
-        echo "myapp"
-    fi
-}
+# 固定工作目录
+WORKDIR="$HOME/myapp"
 
 # 检测系统架构
 detect_arch() {
@@ -48,7 +40,7 @@ detect_os() {
     esac
 }
 
-# 检查并安装依赖 (针对 FreeBSD)
+# 检查并安装依赖
 check_dependencies() {
     local os=$1
     
@@ -89,9 +81,7 @@ download_file() {
     fi
     if [ $? -eq 0 ] && [ -f "$output" ]; then
         print_info "下载成功: $output"
-        # 显示文件信息
-        ls -la "$output" 2>/dev/null || true
-        file "$output" 2>/dev/null || true
+        chmod +x "$output"
     else
         print_error "下载失败: $url"
         exit 1
@@ -250,7 +240,6 @@ create_systemd_service() {
     local service_name=$3
     local service_file="/etc/systemd/system/${service_name}.service"
     local current_user=$(whoami)
-    local current_dir=$WORKDIR
 
     cat > "$service_file" << EOF
 [Unit]
@@ -260,7 +249,7 @@ After=network.target
 [Service]
 Type=simple
 User=$current_user
-WorkingDirectory=$current_dir
+WorkingDirectory=$WORKDIR
 EnvironmentFile=$config_file
 ExecStart=$bin_path
 Restart=always
@@ -279,11 +268,6 @@ create_rc_service() {
     local service_name=$3
     local rc_file="/usr/local/etc/rc.d/${service_name}"
     local current_user=$(whoami)
-    local current_dir=$WORKDIR
-    
-    # 转换相对路径为绝对路径
-    bin_path=$(realpath "$bin_path" 2>/dev/null || readlink -f "$bin_path" 2>/dev/null || echo "$bin_path")
-    config_file=$(realpath "$config_file" 2>/dev/null || readlink -f "$config_file" 2>/dev/null || echo "$config_file")
     
     cat > "$rc_file" << EOF
 #!/bin/sh
@@ -301,7 +285,7 @@ load_rc_config "\$name"
 
 : \${${service_name}_enable:=NO}
 : \${${service_name}_user:=$current_user}
-: \${${service_name}_dir:=$current_dir}
+: \${${service_name}_dir:=$WORKDIR}
 
 pidfile="/var/run/\${name}.pid"
 command="/usr/sbin/daemon"
@@ -311,7 +295,6 @@ start_precmd="export_env"
 stop_postcmd="cleanup_pid"
 
 export_env() {
-    # 加载环境变量
     if [ -f "${config_file}" ]; then
         . "${config_file}"
         export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH ARGO_PORT FILE_PATH AUTO_ACCESS
@@ -355,6 +338,7 @@ create_service() {
 
 # 停止现有服务
 stop_existing() {
+    # 停止通过 PID 文件记录的进程
     if [ -f "$WORKDIR/myapp.pid" ]; then
         OLD_PID=$(cat "$WORKDIR/myapp.pid")
         if ps -p $OLD_PID > /dev/null 2>&1; then
@@ -362,10 +346,14 @@ stop_existing() {
             kill $OLD_PID 2>/dev/null || true
             sleep 2
         fi
+        rm -f "$WORKDIR/myapp.pid"
     fi
     
-    # 杀掉相关进程
-    pkill -f "$BIN_NAME" 2>/dev/null || true
+    # 杀掉所有 myapp 相关进程
+    if [ -f "$WORKDIR/.env" ]; then
+        source "$WORKDIR/.env"
+        pkill -f "$WORKDIR" 2>/dev/null || true
+    fi
 }
 
 # 主函数
@@ -375,9 +363,6 @@ main() {
     echo "=========================================="
     echo ""
 
-    # 固定工作目录
-    WORKDIR="$HOME/myapp"
-    
     # 检测环境
     print_info "检测系统环境..."
     OS=$(detect_os)
@@ -389,18 +374,14 @@ main() {
     # 检查并安装依赖
     check_dependencies "$OS"
 
-    # 生成随机文件名
-    BIN_NAME=$(generate_random_name)
-    print_info "二进制文件名: $BIN_NAME"
-    
     # 创建固定目录
     mkdir -p "$WORKDIR"
     cd "$WORKDIR" || exit 1
     print_info "工作目录: $(pwd)"
     
-    # 使用绝对路径
-    BIN_PATH="$(pwd)/$BIN_NAME"
-    CONFIG_FILE="$(pwd)/.env"
+    # 二进制文件路径
+    BIN_PATH="$WORKDIR/myapp"
+    CONFIG_FILE="$WORKDIR/.env"
     
     print_info "二进制文件路径: $BIN_PATH"
     print_info "配置文件路径: $CONFIG_FILE"
@@ -408,7 +389,7 @@ main() {
     # 停止现有服务
     stop_existing
 
-    # 下载对应版本 - 使用您提供的地址
+    # 下载对应版本
     if [ "$OS" = "freebsd" ]; then
         if [ "$ARCH" = "amd64" ]; then
             DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/v1.0.0.12/myapp-freebsd-amd64"
@@ -462,8 +443,9 @@ main() {
         configure_env "$CONFIG_FILE"
     fi
 
-    # 创建必要目录
+    # 创建必要目录（程序会在当前目录创建 tmp）
     mkdir -p ./tmp
+    print_info "已创建 tmp 目录"
 
     # 启动程序
     print_info "启动 myapp..."
@@ -473,6 +455,7 @@ main() {
     source "$CONFIG_FILE"
     set +a
     
+    # 后台运行
     nohup "$BIN_PATH" > ./myapp.log 2>&1 &
     
     APP_PID=$!
@@ -481,6 +464,7 @@ main() {
     print_info "myapp 已启动，PID: $APP_PID"
     print_info "日志文件: $(pwd)/myapp.log"
     print_info "配置文件: $CONFIG_FILE"
+    print_info "临时目录: $(pwd)/tmp"
 
     # 等待几秒检查进程
     sleep 3
@@ -496,8 +480,9 @@ main() {
         echo ""
         print_info "管理命令:"
         print_info "  查看日志: tail -f $(pwd)/myapp.log"
+        print_info "  查看 tmp: ls -la $(pwd)/tmp"
         print_info "  停止服务: kill $APP_PID"
-        print_info "  重启服务: kill $APP_PID && ./$BIN_NAME"
+        print_info "  重启服务: $BIN_PATH"
         print_info "  查看配置: cat $CONFIG_FILE"
         echo ""
 
@@ -505,10 +490,28 @@ main() {
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
             SERVICE_NAME="myapp"
-            create_service "$(pwd)/$BIN_NAME" "$CONFIG_FILE" "$SERVICE_NAME" "$OS"
+            create_service "$BIN_PATH" "$CONFIG_FILE" "$SERVICE_NAME" "$OS"
+            print_info "系统服务已安装，可使用以下命令管理:"
+            if [ "$OS" = "freebsd" ]; then
+                echo "  sudo service myapp start"
+                echo "  sudo service myapp stop"
+                echo "  sudo service myapp status"
+            else
+                echo "  sudo systemctl start myapp"
+                echo "  sudo systemctl stop myapp"
+                echo "  sudo systemctl status myapp"
+                echo "  sudo systemctl enable myapp"
+            fi
         fi
         
         print_info "=========================================="
+        
+        # 显示 tmp 目录内容
+        sleep 2
+        if [ -d "./tmp" ]; then
+            print_info "tmp 目录内容:"
+            ls -la ./tmp/ 2>/dev/null || true
+        fi
     else
         print_error "myapp 启动失败，请检查日志"
         echo "=== 日志内容 ==="
