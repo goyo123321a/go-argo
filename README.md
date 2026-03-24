@@ -1,9 +1,9 @@
 <div align="center">
   <h2>
     <img src="https://cdn.nodeimage.com/i/NXz3ah3zTwikq3AdQOU0dYw3uyaBiGVj.webp" width="40" height="40" style="vertical-align: middle;"/> 
-    nodejs-argo隧道代理
+    go-argo - Argo隧道代理工具
   </h2>
-  nodejs-argo是一个强大的Argo隧道部署工具，专为PaaS平台和游戏玩具平台设计。它支持多种代理协议（VLESS、VMess、Trojan等），并集成了哪吒探针功能。
+  go-argo是一个强大的Argo隧道部署工具，专为Linux服务器和容器环境设计。它支持多种代理协议（VLESS、VMess、Trojan等），并集成了哪吒探针功能。
 
 ---
 
@@ -19,153 +19,240 @@ Telegram交流反馈群组：https://t.me/eooceu
 
 ## 说明 （部署前请仔细阅读）
 
-* 本项目是针对node环境的paas平台和游戏玩具而生，采用Argo隧道部署节点，集成哪吒探针v0或v1可选。
-* node玩具平台只需上传index.js和package.json即可，paas平台需要docker部署的才上传Dockerfile。
+* 本项目是为Linux服务器和容器环境设计的Argo隧道部署工具，采用Go语言编写，性能更优，资源占用更低。
+* 支持一键部署脚本，自动检测系统架构（amd64/arm64），下载对应版本并后台运行。
 * 不填写ARGO_DOMAIN和ARGO_AUTH两个变量即启用临时隧道，反之则使用固定隧道。
 * 哪吒v0/v1可选,当哪吒端口为{443,8443,2096,2087,2083,2053}其中之一时，自动开启tls。
+* 订阅地址返回base64编码的节点信息，支持直接查看或下载。
 
 ## 📋 环境变量
 
 | 变量名 | 是否必须 | 默认值 | 说明 |
 |--------|----------|--------|------|
-| UPLOAD_URL | 否 | - | 订阅上传地址 |
-| PROJECT_URL | 否 | https://www.google.com | 项目分配的域名 |
+| UPLOAD_URL | 否 | - | 订阅上传地址（Merge-sub项目地址） |
+| PROJECT_URL | 否 | - | 项目分配的域名 |
 | AUTO_ACCESS | 否 | false | 是否开启自动访问保活 |
-| PORT | 否 | 3000 | HTTP服务监听端口 |
-| ARGO_PORT | 否 | 8001 | Argo隧道端口 |
-| UUID | 否 | 89c13786-25aa-4520-b2e7-12cd60fb5202 | 用户UUID |
+| SERVER_PORT | 否 | 7860 | HTTP服务监听端口 |
+| ARGO_PORT | 否 | 8001 | Argo隧道端口（内部使用） |
+| UUID | 否 | 9afd1229-b893-40c1-84dd-51e7ce204913 | 用户UUID |
 | NEZHA_SERVER | 否 | - | 哪吒面板域名 |
-| NEZHA_PORT | 否 | - | 哪吒端口 |
+| NEZHA_PORT | 否 | - | 哪吒端口（v0使用，v1留空） |
 | NEZHA_KEY | 否 | - | 哪吒密钥 |
 | ARGO_DOMAIN | 否 | - | Argo固定隧道域名 |
-| ARGO_AUTH | 否 | - | Argo固定隧道密钥 |
-| CFIP | 否 | www.visa.com.tw | 节点优选域名或IP |
+| ARGO_AUTH | 否 | - | Argo固定隧道密钥（Token或JSON） |
+| CFIP | 否 | saas.sin.fan | 节点优选域名或IP |
 | CFPORT | 否 | 443 | 节点端口 |
-| NAME | 否 | Vls | 节点名称前缀 |
-| FILE_PATH | 否 | ./tmp | 运行目录 |
+| NAME | 否 | - | 节点名称前缀（留空自动获取ISP信息） |
+| FILE_PATH | 否 | /app/tmp | 运行目录 |
 | SUB_PATH | 否 | sub | 订阅路径 |
 
 ## 🌐 订阅地址
 
 - 标准端口：`https://your-domain.com/sub`
 - 非标端口：`http://your-domain.com:port/sub`
+- 下载地址：`http://your-domain.com:port/sub/download`
+- 原始节点：`http://your-domain.com:port/sub/raw`
+- 状态查看：`http://your-domain.com:port/status`
+- 健康检查：`http://your-domain.com:port/health`
 
 ---
 
-## 🚀 进阶使用
+## 🚀 快速部署
 
-### 安装
-
-```bash
-# 全局安装（推荐）
-npm install -g nodejs-argo
-
-# 或者使用yarn
-yarn global add nodejs-argo
-
-# 或者使用pnpm
-pnpm add -g nodejs-argo
-```
-
-### 基本使用
+### 一键部署脚本（推荐）
 
 ```bash
-# 直接运行（使用默认配置）
-nodejs-argo
+# 下载并运行一键部署脚本
+curl -sL https://raw.githubusercontent.com/goyo123321a/go-argo/main/deploy.sh | bash
 
-# 使用npx运行
-npx nodejs-argo
+# 或直接运行
+bash <(curl -sL https://raw.githubusercontent.com/goyo123321a/go-argo/main/deploy.sh)
 
-# 设置环境变量运行
- PORT=3000 npx nodejs-argo
-```
+脚本会自动：
 
-### 环境变量配置
+· 检测系统架构（amd64/arm64）
+· 下载对应版本的二进制文件
+· 生成随机6位字母文件名
+· 交互式配置环境变量
+· 后台运行服务
+· 可选安装为systemd服务
 
-可使用 `.env` 文件来配置环境变量运行
-
-
-或者直接在命令行中设置：
+手动部署
 
 ```bash
-export UPLOAD_URL="https://your-merge-sub-domain.com"
-export PROJECT_URL="https://your-project-domain.com"
-export PORT=3000
+# 1. 下载对应版本
+# amd64
+wget https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-linux-amd64 -O myapp
+
+# arm64
+wget https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-linux-arm64 -O myapp
+
+# 2. 赋予执行权限
+chmod +x myapp
+
+# 3. 设置环境变量
 export UUID="your-uuid-here"
 export NEZHA_SERVER="nz.your-domain.com:8008"
 export NEZHA_KEY="your-nezha-key"
+export SERVER_PORT=7860
+
+# 4. 创建临时目录
+mkdir -p ./tmp
+
+# 5. 运行
+./myapp
 ```
 
-## 📦 作为npm模块使用
+🐳 Docker 部署
 
-```javascript
-// CommonJS
-const nodejsArgo = require('nodejs-argo');
+使用 Docker 运行
 
-// ES6 Modules
-import nodejsArgo from 'nodejs-argo';
+```bash
+# 拉取镜像
+docker pull ghcr.io/goyo123321a/go-argo:latest
 
-// 启动服务
-nodejsArgo.start();
+# 运行容器
+docker run -d \
+  --name go-argo \
+  -p 7860:7860 \
+  -v ./data:/app/tmp \
+  -e UUID="your-uuid" \
+  -e NEZHA_SERVER="nz.example.com:8008" \
+  -e NEZHA_KEY="your-key" \
+  -e ARGO_DOMAIN="your-domain.com" \
+  -e ARGO_AUTH="your-token" \
+  ghcr.io/goyo123321a/go-argo:latest
 ```
 
-## 🔧 后台运行
+使用 Docker Compose
 
-### 使用screen（推荐）
+创建 docker-compose.yml：
+
+```yaml
+version: '3.8'
+
+services:
+  go-argo:
+    image: ghcr.io/goyo123321a/go-argo:latest
+    container_name: go-argo
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./data:/app/tmp
+    environment:
+      - UUID=9afd1229-b893-40c1-84dd-51e7ce204913
+      - NEZHA_SERVER=nz.example.com:8008
+      - NEZHA_KEY=your-secret-key
+      - SERVER_PORT=7860
+      - ARGO_PORT=8001
+      - CFIP=saas.sin.fan
+      - CFPORT=443
+```
+
+启动服务：
+
+```bash
+docker-compose up -d
+```
+
+🔧 环境变量配置
+
+使用 .env 文件
+
+创建 .env 文件：
+
+```bash
+# myapp 配置文件
+UUID=9afd1229-b893-40c1-84dd-51e7ce204913
+CFIP=saas.sin.fan
+CFPORT=443
+NAME=My-VPS
+SERVER_PORT=7860
+SUB_PATH=sub
+ARGO_PORT=8001
+FILE_PATH=./tmp
+AUTO_ACCESS=false
+```
+
+使用 export 设置
+
+```bash
+export UUID="your-uuid-here"
+export NEZHA_SERVER="nz.your-domain.com:8008"
+export NEZHA_KEY="your-nezha-key"
+export SERVER_PORT=7860
+./myapp
+```
+
+🔧 后台运行
+
+使用 nohup（简单方式）
+
+```bash
+nohup ./myapp > myapp.log 2>&1 &
+echo $! > myapp.pid
+```
+
+使用 screen（推荐）
+
 ```bash
 # 创建screen会话
 screen -S argo
 
 # 运行应用
-nodejs-argo
+./myapp
 
 # 按 Ctrl+A 然后按 D 分离会话
 # 重新连接：screen -r argo
 ```
 
-### 使用tmux
+使用 tmux
+
 ```bash
 # 创建tmux会话
 tmux new-session -d -s argo
 
 # 运行应用
-tmux send-keys -t argo "nodejs-argo" Enter
+tmux send-keys -t argo "./myapp" Enter
 
 # 分离会话：tmux detach -s argo
 # 重新连接：tmux attach -t argo
 ```
 
-### 使用PM2
+使用 PM2
+
 ```bash
 # 安装PM2
 npm install -g pm2
 
 # 启动应用
-pm2 start nodejs-argo --name "argo-service"
+pm2 start ./myapp --name "argo-service"
 
 # 管理应用
 pm2 status
 pm2 logs argo-service
 pm2 restart argo-service
+pm2 stop argo-service
 ```
 
-### 使用systemd（Linux系统服务）
-```bash
-# 创建服务文件
-sudo nano /etc/systemd/system/nodejs-argo.service
+使用 systemd（Linux系统服务）
 
-```
+创建服务文件 /etc/systemd/system/go-argo.service：
+
+```ini
 [Unit]
-Description=Node.js Argo Service
+Description=Go Argo Service
 After=network.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/test
-Environment=ARGO_PORT=8080
-Environment=PORT=3000
-ExecStart=/usr/bin/npx nodejs-argo
+WorkingDirectory=/root/go-argo
+Environment="UUID=9afd1229-b893-40c1-84dd-51e7ce204913"
+Environment="SERVER_PORT=7860"
+Environment="ARGO_PORT=8001"
+ExecStart=/root/go-argo/myapp
 Restart=always
 RestartSec=10
 
@@ -173,32 +260,44 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-# 启动服务
-sudo systemctl start nodejs-argo
-sudo systemctl enable nodejs-argo
-```
-
-## 🔄 更新
+启动服务：
 
 ```bash
-# 更新全局安装的包
-npm update -g nodejs-argo
-
-# 或者重新安装
-npm uninstall -g nodejs-argo
-npm install -g nodejs-argo
+sudo systemctl daemon-reload
+sudo systemctl start go-argo
+sudo systemctl enable go-argo
+sudo systemctl status go-argo
 ```
 
-## 📚 更多信息
+🔄 更新
 
-- [GitHub仓库](https://github.com/eooce/nodejs-argo)
-- [npm包页面](https://www.npmjs.com/package/nodejs-argo)
-- [问题反馈](https://github.com/eooce/nodejs-argo/issues)
+```bash
+# 停止当前服务
+kill $(cat myapp.pid)
 
----
+# 下载最新版本
+wget -O myapp https://github.com/goyo123321a/go-argo/releases/download/latest/myapp-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 
-## 赞助
-* 感谢[VPS.Town](https://vps.town)提供赞助 <a href="https://vps.town" target="_blank"><img src="https://vps.town/static/images/sponsor.png" width="30%" alt="https://vps.town"></a>
+# 赋予执行权限
+chmod +x myapp
 
-* 感谢[ZMTO](https://zmto.com/?affid=1548)提供赞助优质双isp vps。
-# go-argo
+# 重新启动
+nohup ./myapp > myapp.log 2>&1 &
+echo $! > myapp.pid
+```
+
+📊 服务端点
+
+端点 功能 说明
+/sub 查看订阅 返回base64编码的节点信息，浏览器直接显示
+/sub/download 下载订阅 下载sub.txt文件
+/sub/raw 原始节点 查看未编码的节点配置
+/status 服务状态 JSON格式返回运行状态
+/health 健康检查 返回"OK"
+/version 版本信息 返回版本和构建信息
+
+📚 更多信息
+
+· GitHub仓库
+· 问题反馈
+· Releases下载
