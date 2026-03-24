@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// 版本信息（通过 ldflags 注入）
+// 版本信息
 var (
 	Version   = "dev"
 	BuildDate = "unknown"
@@ -33,7 +33,7 @@ var (
 	uploadURL    = getEnv("UPLOAD_URL", "")
 	projectURL   = getEnv("PROJECT_URL", "")
 	autoAccess   = getEnvBool("AUTO_ACCESS", false)
-	filePath     = getEnv("FILE_PATH", "./tmp")
+	filePath     = getEnv("FILE_PATH", "./tmp") // 使用相对路径
 	subPath      = getEnv("SUB_PATH", "sub")
 	port         = getEnvInt("SERVER_PORT", 7860)
 	uuid         = getEnv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
@@ -71,6 +71,9 @@ var (
 	subContentMutex sync.RWMutex
 	subReady       bool
 	subReadyMutex  sync.RWMutex
+
+	// 工作目录
+	workDir string
 )
 
 // Xray 配置结构体
@@ -270,7 +273,27 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// 初始化路径（修复 FreeBSD 路径问题）
 func initPaths() {
+	// 获取当前工作目录
+	var err error
+	workDir, err = os.Getwd()
+	if err != nil {
+		workDir = "."
+	}
+
+	// 如果 filePath 是相对路径，则基于当前工作目录
+	if !filepath.IsAbs(filePath) {
+		filePath = filepath.Join(workDir, filePath)
+	}
+
+	// 确保目录存在
+	if err := ensureDir(filePath); err != nil {
+		log.Printf("⚠ 创建目录失败: %v, 使用当前目录", err)
+		filePath = workDir
+	}
+
+	// 设置路径
 	npmPath = filepath.Join(filePath, npmName)
 	phpPath = filepath.Join(filePath, phpName)
 	webPath = filepath.Join(filePath, webName)
@@ -279,6 +302,9 @@ func initPaths() {
 	listFilePath = filepath.Join(filePath, "list.txt")
 	bootLogPath = filepath.Join(filePath, "boot.log")
 	configPath = filepath.Join(filePath, "config.json")
+
+	log.Printf("📁 工作目录: %s", workDir)
+	log.Printf("📁 文件目录: %s", filePath)
 }
 
 // 检测操作系统
@@ -510,51 +536,48 @@ func getFilesForArchitecture(arch string) []struct {
 	url  string
 } {
 	var files []struct{ path string; url string }
-	
+
 	osName := getSystemOS()
-	
+
 	// 根据操作系统选择下载源
 	if osName == "freebsd" {
-		// 使用 serv00 脚本中的下载地址
+		// FreeBSD 使用正确的下载地址
 		var baseURL string
-		
-		// 根据架构选择基础 URL
+
 		if arch == "arm64" {
 			baseURL = "https://github.com/eooce/test/releases/download/freebsd-arm64"
 		} else {
 			baseURL = "https://github.com/eooce/test/releases/download/freebsd"
 		}
-		
-		// 下载 sing-box 核心 (sb)
+
+		// 下载 sing-box 核心
 		files = append(files, struct{ path string; url string }{
-			webPath, 
+			webPath,
 			baseURL + "/sb",
 		})
-		
-		// 下载 cloudflared (server)
+
+		// 下载 cloudflared
 		files = append(files, struct{ path string; url string }{
-			botPath, 
+			botPath,
 			baseURL + "/server",
 		})
-		
-		// 哪吒监控相关
+
+		// 哪吒监控
 		if nezhaServer != "" && nezhaKey != "" {
 			if nezhaPort != "" {
-				// 哪吒 v0 (npm)
 				files = append(files, struct{ path string; url string }{
-					npmPath, 
+					npmPath,
 					baseURL + "/npm",
 				})
 			} else {
-				// 哪吒 v1 (v1)
 				files = append(files, struct{ path string; url string }{
-					phpPath, 
+					phpPath,
 					baseURL + "/v1",
 				})
 			}
 		}
 	} else {
-		// Linux 系统使用原有下载源
+		// Linux 系统
 		if arch == "arm64" {
 			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
 			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
@@ -562,8 +585,7 @@ func getFilesForArchitecture(arch string) []struct {
 			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
 			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
 		}
-		
-		// 哪吒监控
+
 		if nezhaServer != "" && nezhaKey != "" {
 			if nezhaPort != "" {
 				url := "https://amd64.ssss.nyc.mn/agent"
@@ -586,6 +608,11 @@ func getFilesForArchitecture(arch string) []struct {
 
 // 下载文件
 func downloadFile(filePath, fileURL string) error {
+	// 确保目录存在
+	if err := ensureDir(filepath.Dir(filePath)); err != nil {
+		return fmt.Errorf("创建目录失败: %v", err)
+	}
+
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(fileURL)
 	if err != nil {
@@ -594,65 +621,90 @@ func downloadFile(filePath, fileURL string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: %s", resp.Status)
+		return fmt.Errorf("下载失败: %s", resp.Status)
 	}
 
-	// 直接写入文件
-	out, err := os.Create(filePath)
+	// 创建临时文件
+	tempFile := filePath + ".tmp"
+	out, err := os.Create(tempFile)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
+	// 下载
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
+		os.Remove(tempFile)
+		return err
+	}
+	out.Close()
+
+	// 移动到目标位置
+	if err := os.Rename(tempFile, filePath); err != nil {
 		return err
 	}
 
 	// 设置可执行权限
-	if err := os.Chmod(filePath, 0775); err != nil {
+	if err := os.Chmod(filePath, 0755); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// 运行核心代理（FreeBSD 使用 sb）
+// 运行核心代理
 func runCore() error {
 	if !fileExists(webPath) {
-		return fmt.Errorf("core binary not found: %s", webPath)
+		// 尝试在当前目录查找
+		altPath := filepath.Join(workDir, filepath.Base(webPath))
+		if fileExists(altPath) {
+			webPath = altPath
+		} else {
+			return fmt.Errorf("核心文件不存在: %s", webPath)
+		}
 	}
 
 	var cmd *exec.Cmd
-	
+
 	if runtime.GOOS == "freebsd" {
-		// FreeBSD 使用 sb (sing-box)
+		// FreeBSD 使用 sing-box
+		log.Printf("🚀 启动 Sing-box: %s", webPath)
 		cmd = exec.Command(webPath, "run", "-c", configPath)
 	} else {
 		// Linux 使用 Xray
+		log.Printf("🚀 启动 Xray: %s", webPath)
 		cmd = exec.Command(webPath, "-c", configPath)
 	}
-	
+
 	cmd.Dir = filePath
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	
+
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("启动失败: %v", err)
 	}
-	
+
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
-	
+
+	log.Printf("✓ 核心进程已启动 (PID: %d)", cmd.Process.Pid)
 	time.Sleep(2 * time.Second)
 	return nil
 }
 
-// 运行 Cloudflared (server)
+// 运行 Cloudflared
 func runCloudflared() error {
 	if !fileExists(botPath) {
-		return nil
+		// 尝试在当前目录查找
+		altPath := filepath.Join(workDir, filepath.Base(botPath))
+		if fileExists(altPath) {
+			botPath = altPath
+		} else {
+			log.Printf("⚠ Cloudflared 不存在: %s", botPath)
+			return nil
+		}
 	}
 
 	args := []string{"tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"}
@@ -670,12 +722,13 @@ func runCloudflared() error {
 			"--url", fmt.Sprintf("http://localhost:%d", argoPort))
 	}
 
+	log.Printf("🚀 启动 Cloudflared: %s", botPath)
 	cmd := exec.Command(botPath, args...)
 	cmd.Dir = filePath
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
-	// 对于临时隧道，需要捕获输出
+	// 捕获输出用于获取临时域名
 	if argoAuth == "" || argoDomain == "" {
 		stdout, err := cmd.StdoutPipe()
 		if err == nil {
@@ -701,9 +754,12 @@ func runCloudflared() error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
+
+	log.Printf("✓ Cloudflared 已启动 (PID: %d)", cmd.Process.Pid)
 	time.Sleep(2 * time.Second)
 	return nil
 }
@@ -715,11 +771,11 @@ func runNezha() error {
 	}
 
 	if nezhaPort == "" {
-		// 哪吒 v1 使用 v1 程序
+		// 哪吒 v1
 		if !fileExists(phpPath) {
 			return nil
 		}
-		
+
 		// 生成 config.yaml
 		port := ""
 		if strings.Contains(nezhaServer, ":") {
@@ -770,11 +826,11 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 		processMutex.Unlock()
 		time.Sleep(1 * time.Second)
 	} else {
-		// 哪吒 v0 使用 npm 程序
+		// 哪吒 v0
 		if !fileExists(npmPath) {
 			return nil
 		}
-		
+
 		args := []string{"-s", nezhaServer + ":" + nezhaPort, "-p", nezhaKey}
 		tlsPorts := []string{"443", "8443", "2096", "2087", "2083", "2053"}
 		for _, p := range tlsPorts {
@@ -805,17 +861,31 @@ func downloadFilesAndRun() error {
 	arch := getSystemArchitecture()
 	files := getFilesForArchitecture(arch)
 
+	log.Printf("📥 准备下载 %d 个文件", len(files))
+
 	// 下载文件
 	for _, f := range files {
 		if err := downloadFile(f.path, f.url); err != nil {
 			log.Printf("⚠ 下载失败 %s: %v", f.url, err)
 			continue
 		}
+		log.Printf("✓ 下载成功: %s", filepath.Base(f.path))
+	}
+
+	// 列出下载的文件
+	log.Printf("📁 文件列表:")
+	entries, _ := os.ReadDir(filePath)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			if info, err := entry.Info(); err == nil {
+				log.Printf("   - %s (%d bytes)", entry.Name(), info.Size())
+			}
+		}
 	}
 
 	// 运行哪吒
 	if err := runNezha(); err != nil {
-		// 忽略错误
+		log.Printf("⚠ 哪吒启动失败: %v", err)
 	}
 
 	// 运行核心代理
@@ -825,26 +895,18 @@ func downloadFilesAndRun() error {
 
 	// 运行 Cloudflared
 	if err := runCloudflared(); err != nil {
-		// 忽略错误
+		log.Printf("⚠ Cloudflared 启动失败: %v", err)
 	}
 
 	time.Sleep(5 * time.Second)
 
-	// 显示运行的进程信息
 	log.Printf("✓ 核心服务已启动")
 	if runtime.GOOS == "freebsd" {
-		log.Printf("  Sing-box: %s", webName)
+		log.Printf("  Sing-box: %s", filepath.Base(webPath))
 	} else {
-		log.Printf("  Xray: %s", webName)
+		log.Printf("  Xray: %s", filepath.Base(webPath))
 	}
-	log.Printf("  Tunnel: %s", botName)
-	if nezhaServer != "" && nezhaKey != "" {
-		if nezhaPort != "" {
-			log.Printf("  哪吒: %s", npmName)
-		} else {
-			log.Printf("  哪吒: %s", phpName)
-		}
-	}
+	log.Printf("  Tunnel: %s", filepath.Base(botPath))
 
 	return nil
 }
@@ -1173,7 +1235,7 @@ func startHTTPServer() {
 		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
 
-	// 订阅路由 - 返回 base64 编码的订阅（纯文本，不触发下载）
+	// 订阅路由 - 返回 base64 编码的订阅
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1199,7 +1261,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 返回纯文本，不设置 Content-Disposition 就不会触发下载
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Write(responseData)
 			return
@@ -1209,7 +1270,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 订阅下载路由 - 触发下载
+	// 订阅下载路由
 	mux.HandleFunc("/"+subPath+"/download", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1235,7 +1296,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 设置下载头
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
 			w.Write(responseData)
@@ -1246,7 +1306,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 调试路由 - 查看原始订阅内容（未编码）
+	// 调试路由
 	mux.HandleFunc("/"+subPath+"/raw", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1297,6 +1357,8 @@ func startHTTPServer() {
 			"sub_path":  subPath,
 			"os":        runtime.GOOS,
 			"arch":      runtime.GOARCH,
+			"workdir":   workDir,
+			"filepath":  filePath,
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1327,10 +1389,10 @@ func startHTTPServer() {
 func main() {
 	log.SetFlags(log.LstdFlags)
 
-	// 初始化目录
-	if err := ensureDir(filePath); err != nil {
-		log.Fatal("创建目录失败:", err)
-	}
+	log.Printf("🚀 myapp 启动 (版本: %s)", Version)
+	log.Printf("💻 系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+
+	// 初始化路径（修复 FreeBSD 路径问题）
 	initPaths()
 
 	// 信号处理
@@ -1338,14 +1400,14 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("正在关闭服务...")
+		log.Println("🛑 正在关闭服务...")
 		stopAllProcesses()
 		if httpServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			httpServer.Shutdown(ctx)
 		}
-		log.Println("服务已关闭")
+		log.Println("✓ 服务已关闭")
 		os.Exit(0)
 	}()
 
@@ -1362,7 +1424,7 @@ func main() {
 	// 配置 Argo 隧道
 	argoType()
 
-	// 生成配置（根据操作系统自动选择 Xray 或 Sing-box）
+	// 生成配置
 	if err := generateConfig(); err != nil {
 		log.Printf("⚠ 生成配置失败: %v", err)
 	}
@@ -1383,11 +1445,12 @@ func main() {
 	// 清理文件
 	cleanFiles()
 
-	// 简化启动成功日志
+	// 启动成功日志
 	log.Printf("✓ myapp 运行中")
 	log.Printf("  订阅: /%s", subPath)
 	log.Printf("  下载: /%s/download", subPath)
-	log.Printf("  系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+	log.Printf("  状态: /status")
+	log.Printf("  目录: %s", workDir)
 
 	// 保持程序运行
 	select {}
