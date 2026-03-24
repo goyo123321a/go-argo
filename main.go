@@ -518,6 +518,38 @@ func generateConfig() error {
 	return generateXrayConfig()
 }
 
+// 下载文件
+func downloadFile(filePath, fileURL string) error {
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(fileURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// 设置可执行权限
+	if err := os.Chmod(filePath, 0775); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // 获取需要下载的文件列表
 func getFilesForArchitecture(arch string) []struct {
 	path string
@@ -531,15 +563,10 @@ func getFilesForArchitecture(arch string) []struct {
 	if osName == "freebsd" {
 		// FreeBSD 使用 sing-box 替代 Xray
 		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{webPath, "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-freebsd-arm64.tar.gz"})
+			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/sb"})
+			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
 		} else {
-			files = append(files, struct{ path string; url string }{webPath, "https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-freebsd-amd64.tar.gz"})
-		}
-		
-		// Cloudflared 使用 Linux 版本（通过兼容层）
-		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot-arm"})
-		} else {
+			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/sb"})
 			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
 		}
 	} else {
@@ -571,69 +598,6 @@ func getFilesForArchitecture(arch string) []struct {
 	}
 
 	return files
-}
-
-// 下载文件（支持 tar.gz 解压）
-func downloadFile(filePath, fileURL string) error {
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(fileURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: %s", resp.Status)
-	}
-
-	// 检查是否是 tar.gz 文件
-	if strings.HasSuffix(fileURL, ".tar.gz") {
-		tempFile := filePath + ".tar.gz"
-		out, err := os.Create(tempFile)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-		defer os.Remove(tempFile)
-
-		_, err = io.Copy(out, resp.Body)
-		if err != nil {
-			return err
-		}
-		out.Close()
-
-		// 解压 tar.gz
-		cmd := exec.Command("tar", "-xzf", tempFile, "-C", filepath.Dir(filePath))
-		if err := cmd.Run(); err != nil {
-			return err
-		}
-
-		// 查找并移动 sing-box 二进制文件
-		singBoxPath := filepath.Join(filepath.Dir(filePath), "sing-box")
-		if fileExists(singBoxPath) {
-			if err := os.Rename(singBoxPath, filePath); err != nil {
-				return err
-			}
-		}
-	} else {
-		out, err := os.Create(filePath)
-		if err != nil {
-			return err
-		}
-		defer out.Close()
-
-		_, err = io.Copy(out, resp.Body)
-		if err != nil {
-			return err
-		}
-	}
-
-	// 设置可执行权限
-	if err := os.Chmod(filePath, 0775); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // 运行核心代理（Xray 或 Sing-box）
