@@ -290,7 +290,22 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// initPaths 将所有路径转为绝对路径，避免相对路径问题
 func initPaths() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Fatal("获取工作目录失败:", err)
+	}
+	// 如果 filePath 是相对路径，转为绝对路径
+	absFilePath := filePath
+	if !filepath.IsAbs(filePath) {
+		absFilePath = filepath.Join(cwd, filePath)
+	}
+	if err := ensureDir(absFilePath); err != nil {
+		log.Fatal("创建目录失败:", err)
+	}
+	filePath = absFilePath
+
 	npmPath = filepath.Join(filePath, npmName)
 	phpPath = filepath.Join(filePath, phpName)
 	webPath = filepath.Join(filePath, webName)
@@ -1250,9 +1265,7 @@ func startHTTPServer() {
 
 func main() {
 	log.SetFlags(log.LstdFlags)
-	if err := ensureDir(filePath); err != nil {
-		log.Fatal("创建目录失败:", err)
-	}
+	// 初始化目录和绝对路径
 	initPaths()
 
 	sigChan := make(chan os.Signal, 1)
