@@ -19,6 +19,17 @@ print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 WORKDIR="$HOME/myapp"
 VERSION="v1.0.0.13"
 
+# 生成随机文件名
+generate_random_name() {
+    if command -v openssl &> /dev/null; then
+        openssl rand -hex 3 2>/dev/null | tr -d '\n' || echo "myapp"
+    elif [ -f /dev/urandom ]; then
+        cat /dev/urandom 2>/dev/null | tr -dc 'a-z0-9' | fold -w 6 | head -n 1 || echo "myapp"
+    else
+        echo "myapp"
+    fi
+}
+
 # 检测系统架构
 detect_arch() {
     ARCH=$(uname -m)
@@ -339,6 +350,12 @@ create_service() {
 
 # 停止现有服务
 stop_existing() {
+    # 保存旧二进制文件名用于清理
+    OLD_BIN_NAME=""
+    if [ -f "$WORKDIR/.bin_name" ]; then
+        OLD_BIN_NAME=$(cat "$WORKDIR/.bin_name")
+    fi
+    
     # 停止通过 PID 文件记录的进程
     if [ -f "$WORKDIR/myapp.pid" ]; then
         OLD_PID=$(cat "$WORKDIR/myapp.pid")
@@ -350,13 +367,46 @@ stop_existing() {
         rm -f "$WORKDIR/myapp.pid"
     fi
     
-    # 杀掉所有 myapp 相关进程
+    # 杀掉所有可能的进程
+    if [ -n "$OLD_BIN_NAME" ] && [ -f "$WORKDIR/$OLD_BIN_NAME" ]; then
+        pkill -f "$WORKDIR/$OLD_BIN_NAME" 2>/dev/null || true
+    fi
     pkill -f "$WORKDIR/myapp" 2>/dev/null || true
     
-    # 清理 tmp 目录中的旧文件
+    # 清理旧二进制文件
+    if [ -n "$OLD_BIN_NAME" ] && [ -f "$WORKDIR/$OLD_BIN_NAME" ]; then
+        print_info "删除旧二进制文件: $OLD_BIN_NAME"
+        rm -f "$WORKDIR/$OLD_BIN_NAME"
+    fi
+    
+    # 清理 tmp 目录中的旧文件（但保留配置）
     if [ -d "$WORKDIR/tmp" ]; then
         print_info "清理 tmp 目录..."
-        rm -rf "$WORKDIR/tmp"/*
+        # 保留 .env 和 .bin_name，删除其他文件
+        find "$WORKDIR/tmp" -type f ! -name ".env" ! -name ".bin_name" -delete 2>/dev/null || true
+    fi
+}
+
+# 检查程序运行状态
+check_process() {
+    local pid=$1
+    
+    if ps -p $pid > /dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 获取本机 IP
+get_local_ip() {
+    # 尝试获取本机 IP
+    if command -v ip &> /dev/null; then
+        ip addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -1
+    elif command -v ifconfig &> /dev/null; then
+        ifconfig | grep -oE 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | grep -v 127.0.0.1 | head -1 | awk '{print $2}'
+    else
+        echo "localhost"
     fi
 }
 
@@ -364,37 +414,52 @@ stop_existing() {
 show_status() {
     local server_port=$1
     local sub_path=$2
+    local log_file="$WORKDIR/myapp.log"
+    local bin_name=$(cat "$WORKDIR/.bin_name" 2>/dev/null || echo "myapp")
+    local local_ip=$(get_local_ip)
     
     echo ""
     print_info "=========================================="
-    print_info "服务已启动"
-    print_info "  订阅地址: http://localhost:$server_port/$sub_path"
-    print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
-    print_info "  状态查看: http://localhost:$server_port/status"
-    echo ""
-    print_info "管理命令:"
-    print_info "  查看日志: tail -f $WORKDIR/myapp.log"
-    print_info "  查看 tmp: ls -la $WORKDIR/tmp"
-    print_info "  查看配置: cat $WORKDIR/.env"
-    print_info "  停止服务: kill \$(cat $WORKDIR/myapp.pid)"
-    print_info "  重启服务: $WORKDIR/myapp"
+    print_info "✓ myapp 运行正常"
+    print_info ""
+    print_info "本地订阅地址:"
+    print_info "  http://localhost:$server_port/$sub_path"
+    if [ -n "$local_ip" ] && [ "$local_ip" != "localhost" ]; then
+        print_info "  http://$local_ip:$server_port/$sub_path"
+    fi
+    print_info ""
+    print_info "状态查看: http://localhost:$server_port/status"
     echo ""
     
-    # 等待程序生成订阅
-    sleep 3
-    if [ -f "$WORKDIR/tmp/sub.txt" ]; then
-        print_info "✓ 订阅文件已生成"
-        print_info "  订阅内容预览:"
-        head -c 200 "$WORKDIR/tmp/sub.txt" 2>/dev/null || true
-        echo "..."
+    # 显示 Argo 隧道域名
+    if [ -f "$WORKDIR/tmp/boot.log" ]; then
+        # 从日志中提取 Argo 域名
+        ARGO_DOMAIN=$(grep -oE '隧道域名: [^ ]+' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1 | sed 's/隧道域名: //')
+        if [ -z "$ARGO_DOMAIN" ]; then
+            ARGO_DOMAIN=$(grep -oE 'https?://([^ ]*trycloudflare\.com)' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1 | sed 's|https://||' | sed 's|http://||')
+        fi
+        if [ -n "$ARGO_DOMAIN" ]; then
+            print_info "Argo 隧道域名: $ARGO_DOMAIN"
+        fi
     fi
     
-    # 显示 Argo 隧道信息
-    if [ -f "$WORKDIR/tmp/boot.log" ]; then
-        ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1)
-        if [ -n "$ARGO_URL" ]; then
-            print_info "✓ Argo 隧道地址: $ARGO_URL"
-            print_info "  外网订阅: $ARGO_URL/$sub_path"
+    echo ""
+    print_info "管理命令:"
+    print_info "  查看日志: tail -f $log_file"
+    print_info "  停止服务: kill \$(cat $WORKDIR/myapp.pid)"
+    print_info "  重启服务: $WORKDIR/$bin_name"
+    echo ""
+    
+    # 显示订阅文件信息
+    if [ -f "$WORKDIR/tmp/sub.txt" ]; then
+        print_info "✓ 订阅文件已生成 ($(ls -lh "$WORKDIR/tmp/sub.txt" | awk '{print $5}'))"
+    fi
+    
+    # 显示系统信息
+    if [ -f "$log_file" ]; then
+        SYSTEM_INFO=$(grep -oE '系统: [^ ]+' "$log_file" 2>/dev/null | tail -1 | sed 's/系统: //')
+        if [ -n "$SYSTEM_INFO" ]; then
+            print_info "运行环境: $SYSTEM_INFO"
         fi
     fi
 }
@@ -422,10 +487,12 @@ main() {
     cd "$WORKDIR" || exit 1
     print_info "工作目录: $(pwd)"
     
-    # 二进制文件路径
-    BIN_PATH="$WORKDIR/myapp"
+    # 生成随机二进制文件名
+    BIN_NAME=$(generate_random_name)
+    BIN_PATH="$WORKDIR/$BIN_NAME"
     CONFIG_FILE="$WORKDIR/.env"
     
+    print_info "二进制文件名: $BIN_NAME"
     print_info "二进制文件路径: $BIN_PATH"
     print_info "配置文件路径: $CONFIG_FILE"
 
@@ -468,6 +535,9 @@ main() {
     chmod +x "$BIN_PATH"
     print_info "已赋予执行权限"
     
+    # 保存二进制文件名
+    echo "$BIN_NAME" > "$WORKDIR/.bin_name"
+    
     # 显示文件信息
     print_info "文件信息:"
     ls -la "$BIN_PATH"
@@ -506,14 +576,13 @@ main() {
     print_info "日志文件: $(pwd)/myapp.log"
     print_info "配置文件: $CONFIG_FILE"
     print_info "临时目录: $(pwd)/tmp"
+    print_info "二进制文件: $BIN_PATH"
 
     # 等待程序启动
     sleep 5
 
     # 检查进程
-    if ps -p $APP_PID > /dev/null 2>&1; then
-        print_info "✓ myapp 运行正常"
-        
+    if check_process $APP_PID; then
         # 显示服务状态
         show_status "$SERVER_PORT" "$SUB_PATH"
         
@@ -541,15 +610,20 @@ main() {
         
         # 显示最近的日志
         echo ""
-        print_info "最近日志 (最后 10 行):"
-        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
+        print_info "最近日志 (最后 15 行):"
+        tail -15 ./myapp.log 2>/dev/null || echo "无日志"
         
     else
         print_error "myapp 启动失败，请检查日志"
+        echo ""
         echo "=== 日志内容 ==="
         cat ./myapp.log 2>/dev/null || echo "无日志文件"
+        echo ""
         echo "=== 二进制文件信息 ==="
         file "$BIN_PATH" 2>/dev/null || echo "无法获取文件信息"
+        echo ""
+        echo "=== 配置文件内容 ==="
+        cat "$CONFIG_FILE" 2>/dev/null || echo "无法读取配置文件"
         exit 1
     fi
 }
