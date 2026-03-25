@@ -43,7 +43,7 @@ var (
 	argoDomain   = getEnv("ARGO_DOMAIN", "")
 	argoAuth     = getEnv("ARGO_AUTH", "")
 	argoPort     = getEnvInt("ARGO_PORT", 8001)
-	cfip         = getEnv("CFIP", "cfip.dynv.dedyn.io")
+	cfip         = getEnv("CFIP", "cf.877774.xyz")
 	cfport       = getEnvInt("CFPORT", 443)
 	name         = getEnv("NAME", "")
 )
@@ -73,7 +73,7 @@ var (
 	subReadyMutex  sync.RWMutex
 )
 
-// Xray 配置结构体
+// Xray 配置结构体 (Linux)
 type XrayConfig struct {
 	Log       XrayLog        `json:"log"`
 	Inbounds  []XrayInbound  `json:"inbounds"`
@@ -156,21 +156,7 @@ type TrojanClient struct {
 	Password string `json:"password"`
 }
 
-// Sing-box 配置结构体
-type SingBoxDNS struct {
-	Servers []SingBoxDNSServer `json:"servers"`
-}
-
-type SingBoxDNSServer struct {
-	Address string `json:"address"`
-	Tag     string `json:"tag,omitempty"`
-}
-
-type SingBoxSniffing struct {
-	Enabled      bool     `json:"enabled"`
-	DestOverride []string `json:"destOverride"`
-}
-
+// Sing-box 配置结构体 (FreeBSD)
 type SingBoxConfig struct {
 	Log       SingBoxLog          `json:"log"`
 	DNS       SingBoxDNS          `json:"dns"`
@@ -181,6 +167,15 @@ type SingBoxConfig struct {
 
 type SingBoxLog struct {
 	Level string `json:"level"`
+}
+
+type SingBoxDNS struct {
+	Servers []SingBoxDNSServer `json:"servers"`
+}
+
+type SingBoxDNSServer struct {
+	Address string `json:"address"`
+	Tag     string `json:"tag,omitempty"`
 }
 
 type SingBoxInbound struct {
@@ -206,6 +201,11 @@ type SingBoxTransport struct {
 	Type    string            `json:"type"`
 	Path    string            `json:"path,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+type SingBoxSniffing struct {
+	Enabled      bool     `json:"enabled"`
+	DestOverride []string `json:"destOverride"`
 }
 
 type SingBoxMultiplex struct {
@@ -297,11 +297,6 @@ func initPaths() {
 	listFilePath = filepath.Join(filePath, "list.txt")
 	bootLogPath = filepath.Join(filePath, "boot.log")
 	configPath = filepath.Join(filePath, "config.json")
-}
-
-// 检测操作系统
-func getSystemOS() string {
-	return runtime.GOOS
 }
 
 // 检测系统架构
@@ -470,7 +465,7 @@ func generateSingBoxConfig() error {
 					Type: "tcp",
 				},
 			},
-			// VLESS WebSocket (内部) - 使用 localhost
+			// VLESS WebSocket (内部)
 			{
 				Type:       "vless",
 				Tag:        "vless-ws",
@@ -575,36 +570,76 @@ func generateConfig() error {
 	return generateXrayConfig()
 }
 
-// 下载文件
+// 下载文件（增强版，带重试和验证）
 func downloadFile(filePath, fileURL string) error {
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(fileURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	// 重试3次
+	maxRetries := 3
+	for retry := 0; retry < maxRetries; retry++ {
+		if retry > 0 {
+			log.Printf("重试下载 (%d/%d): %s", retry+1, maxRetries, fileURL)
+			time.Sleep(3 * time.Second)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: %s", resp.Status)
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Get(fileURL)
+		if err != nil {
+			log.Printf("下载请求失败: %v", err)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			log.Printf("HTTP状态码错误: %d", resp.StatusCode)
+			continue
+		}
+
+		// 创建临时文件
+		tempFile := filePath + ".tmp"
+		out, err := os.Create(tempFile)
+		if err != nil {
+			resp.Body.Close()
+			log.Printf("创建临时文件失败: %v", err)
+			continue
+		}
+
+		// 下载
+		_, err = io.Copy(out, resp.Body)
+		out.Close()
+		resp.Body.Close()
+
+		if err != nil {
+			log.Printf("下载数据失败: %v", err)
+			os.Remove(tempFile)
+			continue
+		}
+
+		// 检查文件大小
+		info, err := os.Stat(tempFile)
+		if err != nil || info.Size() < 1024 {
+			log.Printf("下载文件太小 (%d bytes)，可能不是有效二进制文件", info.Size())
+			os.Remove(tempFile)
+			continue
+		}
+
+		// 重命名临时文件
+		if err := os.Rename(tempFile, filePath); err != nil {
+			log.Printf("重命名文件失败: %v", err)
+			os.Remove(tempFile)
+			continue
+		}
+
+		// 设置可执行权限
+		if err := os.Chmod(filePath, 0775); err != nil {
+			log.Printf("设置权限失败: %v", err)
+			os.Remove(filePath)
+			continue
+		}
+
+		log.Printf("✓ 下载成功: %s (%.2f MB)", filePath, float64(info.Size())/1024/1024)
+		return nil
 	}
 
-	out, err := os.Create(filePath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return err
-	}
-
-	// 设置可执行权限
-	if err := os.Chmod(filePath, 0775); err != nil {
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("下载失败，已重试 %d 次", maxRetries)
 }
 
 // 获取需要下载的文件列表
@@ -614,9 +649,8 @@ func getFilesForArchitecture(arch string) []struct {
 } {
 	var files []struct{ path string; url string }
 
-	osName := getSystemOS()
+	osName := runtime.GOOS
 
-	// 根据操作系统选择下载源
 	if osName == "freebsd" {
 		// FreeBSD 使用脚本中的下载地址
 		baseURL := "https://github.com/eooce/test/releases/download/freebsd"
@@ -624,18 +658,14 @@ func getFilesForArchitecture(arch string) []struct {
 			baseURL = "https://github.com/eooce/test/releases/download/freebsd-arm64"
 		}
 
-		// sb - sing-box 核心
 		files = append(files, struct{ path string; url string }{webPath, baseURL + "/sb"})
-		// server - cloudflared 隧道
 		files = append(files, struct{ path string; url string }{botPath, baseURL + "/server"})
 
-		// 哪吒监控相关
+		// 哪吒监控
 		if nezhaServer != "" && nezhaKey != "" {
 			if nezhaPort != "" {
-				// v0 哪吒使用 npm
 				files = append(files, struct{ path string; url string }{npmPath, baseURL + "/npm"})
 			} else {
-				// v1 哪吒使用 v1
 				files = append(files, struct{ path string; url string }{phpPath, baseURL + "/v1"})
 			}
 		}
@@ -679,10 +709,8 @@ func runCore() error {
 	var cmd *exec.Cmd
 
 	if runtime.GOOS == "freebsd" {
-		// FreeBSD 使用 sing-box
 		cmd = exec.Command(webPath, "run", "-c", configPath)
 	} else {
-		// Linux 使用 Xray
 		cmd = exec.Command(webPath, "-c", configPath)
 	}
 
@@ -1209,8 +1237,6 @@ func cleanFiles() {
 		for _, file := range filesToDelete {
 			os.Remove(file)
 		}
-
-		// 保留 webPath 和 botPath 不删除，避免程序退出
 	})
 }
 
@@ -1242,7 +1268,7 @@ func startHTTPServer() {
 		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
 
-	// 订阅路由 - 返回 base64 编码的订阅（纯文本，不触发下载）
+	// 订阅路由 - 返回 base64 编码的订阅
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1268,7 +1294,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 返回纯文本，不设置 Content-Disposition 就不会触发下载
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Write(responseData)
 			return
@@ -1278,7 +1303,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 订阅下载路由 - 触发下载
+	// 订阅下载路由
 	mux.HandleFunc("/"+subPath+"/download", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1304,7 +1329,6 @@ func startHTTPServer() {
 		}
 
 		if len(responseData) > 0 {
-			// 设置下载头
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("Content-Disposition", "attachment; filename=sub.txt")
 			w.Write(responseData)
@@ -1315,7 +1339,7 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 调试路由 - 查看原始订阅内容（未编码）
+	// 调试路由
 	mux.HandleFunc("/"+subPath+"/raw", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1431,7 +1455,7 @@ func main() {
 	// 配置 Argo 隧道
 	argoType()
 
-	// 生成配置（根据操作系统自动选择 Xray 或 Sing-box）
+	// 生成配置
 	if err := generateConfig(); err != nil {
 		log.Printf("⚠ 生成配置失败: %v", err)
 	}
