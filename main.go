@@ -10,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -50,25 +52,27 @@ var (
 
 // 全局变量
 var (
-	npmName       = generateRandomName()
-	webName       = generateRandomName()
-	botName       = generateRandomName()
-	phpName       = generateRandomName()
-	npmPath       string
-	phpPath       string
-	webPath       string
-	botPath       string
-	subFilePath   string
-	listFilePath  string
-	bootLogPath   string
-	configPath    string
-	processes     []*os.Process
-	processMutex  sync.Mutex
-	httpServer    *http.Server
-	subContent    string
-	subContentMu  sync.RWMutex
-	subReady      bool
-	subReadyMu    sync.RWMutex
+	npmName   = generateRandomName()
+	webName   = generateRandomName()
+	botName   = generateRandomName()
+	phpName   = generateRandomName()
+	npmPath   string
+	phpPath   string
+	webPath   string
+	botPath   string
+	subFilePath string
+	listFilePath string
+	bootLogPath  string
+	configPath   string
+
+	// 进程管理
+	processes      []*os.Process
+	processMutex   sync.Mutex
+	httpServer     *http.Server
+	subContent     string
+	subContentMu   sync.RWMutex
+	subReady       bool
+	subReadyMu     sync.RWMutex
 )
 
 // Xray 配置结构体（Linux 使用）
@@ -95,9 +99,9 @@ type XrayInbound struct {
 }
 
 type XrayStreamSettings struct {
-	Network    string          `json:"network"`
-	Security   string          `json:"security,omitempty"`
-	WSSettings *XrayWSSettings `json:"wsSettings,omitempty"`
+	Network    string           `json:"network"`
+	Security   string           `json:"security,omitempty"`
+	WSSettings *XrayWSSettings  `json:"wsSettings,omitempty"`
 }
 
 type XrayWSSettings struct {
@@ -631,7 +635,7 @@ func runCloudflared() error {
 		// 根据系统选择目标 URL
 		targetPort := argoPort
 		if runtime.GOOS == "freebsd" {
-			// FreeBSD 使用 nginx 代理，所以指向 nginx 端口（即 argoPort）
+			// FreeBSD 使用内建反向代理，所以指向 argoPort
 			targetPort = argoPort
 		} else {
 			// Linux 直接指向 Xray 的 argoPort
@@ -1072,6 +1076,49 @@ func stopAllProcesses() {
 	processes = nil
 }
 
+// 启动反向代理（仅 FreeBSD）
+func startReverseProxy() {
+	if runtime.GOOS != "freebsd" {
+		return
+	}
+	// 路由映射：路径前缀 -> 目标地址
+	routes := map[string]string{
+		"/vless-argo":  "http://127.0.0.1:3002",
+		"/vmess-argo":  "http://127.0.0.1:3003",
+		"/trojan-argo": "http://127.0.0.1:3004",
+	}
+	defaultTarget := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			path := req.URL.Path
+			for prefix, target := range routes {
+				if strings.HasPrefix(path, prefix) {
+					targetURL, _ := url.Parse(target)
+					req.URL.Scheme = targetURL.Scheme
+					req.URL.Host = targetURL.Host
+					req.Host = targetURL.Host
+					return
+				}
+			}
+			targetURL, _ := url.Parse(defaultTarget)
+			req.URL.Scheme = targetURL.Scheme
+			req.URL.Host = targetURL.Host
+			req.Host = targetURL.Host
+		},
+	}
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", argoPort),
+		Handler: proxy,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("反向代理错误: %v", err)
+		}
+	}()
+	log.Printf("✓ 反向代理已启动 (端口: %d)", argoPort)
+}
+
 // HTTP 服务
 func startHTTPServer() {
 	mux := http.NewServeMux()
@@ -1207,6 +1254,7 @@ func main() {
 		log.Fatal("创建目录失败:", err)
 	}
 	initPaths()
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -1221,9 +1269,15 @@ func main() {
 		log.Println("服务已关闭")
 		os.Exit(0)
 	}()
+
 	startHTTPServer()
 	log.Printf("✓ HTTP服务已启动 (端口: %d)", port)
+
+	// 启动反向代理（仅 FreeBSD）
+	startReverseProxy()
+
 	time.Sleep(1 * time.Second)
+
 	deleteNodes()
 	cleanupOldFiles()
 	argoType()
@@ -1238,9 +1292,11 @@ func main() {
 	}
 	addVisitTask()
 	cleanFiles()
+
 	log.Printf("✓ myapp 运行中")
 	log.Printf("  订阅: /%s", subPath)
 	log.Printf("  下载: /%s/download", subPath)
 	log.Printf("  系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+
 	select {}
 }
