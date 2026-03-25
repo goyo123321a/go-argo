@@ -598,7 +598,7 @@ func generateConfig() error {
 	return generateXrayConfig()
 }
 
-// 下载文件
+// 下载文件（简化版）
 func downloadFile(filePath, fileURL string) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Get(fileURL)
@@ -641,37 +641,65 @@ func getFilesForArchitecture(arch string) []struct {
 	
 	// 根据操作系统选择下载源
 	if osName == "freebsd" {
-		// FreeBSD 使用 sing-box
+		// FreeBSD 使用 serv00 脚本的下载地址
 		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/sb"})
-			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
+			files = append(files, 
+				struct{ path string; url string }{webPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/sb"},
+				struct{ path string; url string }{botPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/bot"},
+			)
 		} else {
-			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/sb"})
-			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+			files = append(files, 
+				struct{ path string; url string }{webPath, "https://github.com/eooce/test/releases/download/freebsd/sb"},
+				struct{ path string; url string }{botPath, "https://github.com/eooce/test/releases/download/freebsd/bot"},
+			)
 		}
 	} else {
-		// Linux 系统使用 Xray
+		// Linux 系统使用原有下载源
 		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
-			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
+			files = append(files, 
+				struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"},
+				struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"},
+			)
 		} else {
-			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
-			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+			files = append(files, 
+				struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"},
+				struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"},
+			)
 		}
 	}
 
 	// 哪吒监控
 	if nezhaServer != "" && nezhaKey != "" {
 		if nezhaPort != "" {
-			url := "https://amd64.ssss.nyc.mn/agent"
-			if arch == "arm64" {
-				url = "https://arm64.ssss.nyc.mn/agent"
+			// 哪吒 v0 使用 agent/npm
+			var url string
+			if osName == "freebsd" {
+				if arch == "arm64" {
+					url = "https://github.com/eooce/test/releases/download/freebsd-arm64/npm"
+				} else {
+					url = "https://github.com/eooce/test/releases/download/freebsd/npm"
+				}
+			} else {
+				url = "https://amd64.ssss.nyc.mn/agent"
+				if arch == "arm64" {
+					url = "https://arm64.ssss.nyc.mn/agent"
+				}
 			}
 			files = append([]struct{ path string; url string }{{npmPath, url}}, files...)
 		} else {
-			url := "https://amd64.ssss.nyc.mn/v1"
-			if arch == "arm64" {
-				url = "https://arm64.ssss.nyc.mn/v1"
+			// 哪吒 v1 使用 v1/php
+			var url string
+			if osName == "freebsd" {
+				if arch == "arm64" {
+					url = "https://github.com/eooce/test/releases/download/freebsd-arm64/v1"
+				} else {
+					url = "https://github.com/eooce/test/releases/download/freebsd/v1"
+				}
+			} else {
+				url = "https://amd64.ssss.nyc.mn/v1"
+				if arch == "arm64" {
+					url = "https://arm64.ssss.nyc.mn/v1"
+				}
 			}
 			files = append([]struct{ path string; url string }{{phpPath, url}}, files...)
 		}
@@ -864,7 +892,6 @@ func downloadFilesAndRun() error {
 	// 下载文件
 	for _, f := range files {
 		if fileExists(f.path) {
-			log.Printf("文件已存在: %s", f.path)
 			continue
 		}
 		
@@ -879,8 +906,6 @@ func downloadFilesAndRun() error {
 	if !fileExists(webPath) {
 		return fmt.Errorf("核心二进制文件不存在: %s", webPath)
 	}
-	
-	log.Printf("✓ 核心二进制文件已就绪: %s", webPath)
 
 	// 运行哪吒
 	if err := runNezha(); err != nil {
@@ -909,9 +934,9 @@ func downloadFilesAndRun() error {
 	log.Printf("  Tunnel: %s", botName)
 	if nezhaServer != "" && nezhaKey != "" {
 		if nezhaPort != "" {
-			log.Printf("  哪吒: %s", npmName)
+			log.Printf("  哪吒 v0: %s", npmName)
 		} else {
-			log.Printf("  哪吒: %s", phpName)
+			log.Printf("  哪吒 v1: %s", phpName)
 		}
 	}
 
