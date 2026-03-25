@@ -462,9 +462,6 @@ func generateXrayConfig() error {
 
 // 生成 Sing-box 配置（FreeBSD 系统）
 func generateSingBoxConfig() error {
-	// 获取可用 IP
-	// availableIP := getAvailableIP()
-	
 	config := SingBoxConfig{
 		Log: SingBoxLog{
 			Level: "error",
@@ -476,7 +473,6 @@ func generateSingBoxConfig() error {
 			},
 		},
 		Inbounds: []SingBoxInbound{
-			// 主入口 VLESS (用于 Argo 隧道)
 			{
 				Type:       "vless",
 				Tag:        "vless-main",
@@ -492,7 +488,6 @@ func generateSingBoxConfig() error {
 					Type: "tcp",
 				},
 			},
-			// VLESS WebSocket (内部) - 使用 localhost
 			{
 				Type:       "vless",
 				Tag:        "vless-ws",
@@ -510,7 +505,6 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
-			// VMess WebSocket (内部)
 			{
 				Type:       "vmess",
 				Tag:        "vmess-ws",
@@ -528,7 +522,6 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
-			// Trojan WebSocket (内部)
 			{
 				Type:       "trojan",
 				Tag:        "trojan-ws",
@@ -559,12 +552,10 @@ func generateSingBoxConfig() error {
 		},
 		Route: SingBoxRoute{
 			Rules: []SingBoxRule{
-				// 阻止 QUIC
 				{
 					Protocol: []string{"quic"},
 					Outbound: "block",
 				},
-				// 内网地址直连
 				{
 					IP: []string{
 						"10.0.0.0/8",
