@@ -504,8 +504,8 @@ main() {
         
         print_info "=========================================="
         echo ""
-        print_info "最近日志 (最后 10 行):"
-        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
+        print_info "最近日志 (最后 15 行):"
+        tail -15 ./myapp.log 2>/dev/null || echo "无日志"
         
     else
         print_error "myapp 启动失败，请检查日志"
