@@ -2,7 +2,7 @@
 
 # 一键部署 myapp - 自动下载、配置并运行
 # 支持 Linux 和 FreeBSD
-# 版本: v2.0
+# 版本: v2.1 (移除 nginx，使用内建反向代理)
 
 set -e
 
@@ -44,35 +44,17 @@ detect_os() {
     esac
 }
 
-# 检查并安装依赖
+# 检查并安装依赖（仅 curl/wget）
 check_dependencies() {
     local os=$1
-    
-    if [ "$os" = "freebsd" ]; then
-        if ! command -v pkg &> /dev/null; then
-            print_error "FreeBSD 系统未安装 pkg 包管理器"
-            print_info "请先运行: pkg bootstrap"
-            exit 1
-        fi
-        
-        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+    if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        if [ "$os" = "freebsd" ]; then
             print_info "正在安装 curl..."
             pkg install -y curl || {
                 print_error "安装 curl 失败"
                 exit 1
             }
-        fi
-        
-        # 检查 nginx 是否安装，未安装则尝试安装
-        if ! command -v nginx &> /dev/null; then
-            print_info "正在安装 nginx..."
-            pkg install -y nginx || {
-                print_error "安装 nginx 失败"
-                exit 1
-            }
-        fi
-    elif [ "$os" = "linux" ]; then
-        if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
+        else
             print_error "请安装 curl 或 wget"
             exit 1
         fi
@@ -101,95 +83,24 @@ download_file() {
     fi
 }
 
-# 配置 nginx (仅 FreeBSD)
-setup_nginx() {
-    local os=$1
-    [ "$os" != "freebsd" ] && return
-    
-    local argo_port="${ARGO_PORT:-8001}"
-    local server_port="${SERVER_PORT:-7860}"
-    
-    # 创建 nginx 配置目录（用户目录下）
-    NGINX_CONF_DIR="$HOME/nginx_conf"
-    mkdir -p "$NGINX_CONF_DIR"
-    
-    # 生成 nginx 配置文件
-    cat > "$NGINX_CONF_DIR/argo.conf" << EOF
-server {
-    listen $argo_port;
-    server_name localhost;
-
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
-
-    location /vless-argo {
-        proxy_pass http://127.0.0.1:3002;
-    }
-    location /vmess-argo {
-        proxy_pass http://127.0.0.1:3003;
-    }
-    location /trojan-argo {
-        proxy_pass http://127.0.0.1:3004;
-    }
-    location / {
-        proxy_pass http://127.0.0.1:$server_port;
-    }
-}
-EOF
-
-    # 检查 nginx 主配置文件是否已包含该目录
-    if ! grep -q "include.*$NGINX_CONF_DIR/\*\.conf" /usr/local/etc/nginx/nginx.conf 2>/dev/null; then
-        print_warn "请手动将以下行添加到 /usr/local/etc/nginx/nginx.conf 的 http 块内:"
-        echo "    include $NGINX_CONF_DIR/*.conf;"
-        print_info "或者运行以下命令自动添加:"
-        echo "  sudo sed -i '' '/http {/a\\\n    include $NGINX_CONF_DIR/*.conf;\\\n' /usr/local/etc/nginx/nginx.conf"
-        # 如果用户没有 root 权限，提示手动操作
-        if [ "$(id -u)" -eq 0 ]; then
-            sed -i '' '/http {/a\
-    include '"$NGINX_CONF_DIR"'/*.conf;
-' /usr/local/etc/nginx/nginx.conf
-            print_info "已自动添加 include 指令"
-        else
-            print_warn "您没有 root 权限，请手动添加 include 指令到 nginx 主配置"
-        fi
-    fi
-    
-    # 启动或重载 nginx
-    if pgrep -x nginx >/dev/null; then
-        nginx -s reload
-    else
-        nginx
-    fi
-    print_info "nginx 已启动，监听端口 $argo_port"
-}
-
 # 交互式配置
 configure_env() {
     local config_file=$1
     print_info "开始配置环境变量..."
     echo ""
 
-    # HTTP 服务端口配置
     read -p "请输入 HTTP 服务端口 (留空使用默认 7860): " input_port
     SERVER_PORT="${input_port:-7860}"
     print_info "HTTP 服务端口: $SERVER_PORT"
 
-    # 订阅路径配置
     read -p "请输入订阅路径 (留空使用默认 sub): " input_sub_path
     SUB_PATH="${input_sub_path:-sub}"
     print_info "订阅路径: $SUB_PATH"
 
-    # Argo 端口配置
     read -p "请输入 Argo 隧道端口 (留空使用默认 8001): " input_argo_port
     ARGO_PORT="${input_argo_port:-8001}"
     print_info "Argo 隧道端口: $ARGO_PORT"
 
-    # UUID 配置
     echo ""
     read -p "请输入 UUID (留空使用默认值): " input_uuid
     if [ -z "$input_uuid" ]; then
@@ -199,7 +110,6 @@ configure_env() {
         UUID="$input_uuid"
     fi
 
-    # CFIP 和 CFPORT 配置
     echo ""
     read -p "请输入优选域名/IP (留空使用默认 cf.877774.xyz): " input_cfip
     if [ -z "$input_cfip" ]; then
@@ -211,12 +121,10 @@ configure_env() {
     read -p "请输入端口 (留空使用默认 443): " input_cfport
     CFPORT="${input_cfport:-443}"
 
-    # 节点名称
     echo ""
     read -p "请输入节点名称 (留空使用自动获取): " input_name
     NAME="$input_name"
 
-    # Argo Tunnel 配置
     echo ""
     print_question "是否使用固定隧道? (y/n, 默认 n): "
     read use_fixed_tunnel
@@ -229,7 +137,6 @@ configure_env() {
         fi
     fi
 
-    # 哪吒监控配置
     echo ""
     print_question "是否使用哪吒监控? (y/n, 默认 n): "
     read use_nezha
@@ -251,7 +158,6 @@ configure_env() {
         fi
     fi
 
-    # 自动上传配置
     echo ""
     print_question "是否自动上传订阅? (y/n, 默认 n): "
     read use_upload
@@ -264,7 +170,6 @@ configure_env() {
         fi
     fi
 
-    # 自动保活配置
     echo ""
     print_question "是否开启自动保活? (y/n, 默认 n): "
     read use_auto_access
@@ -274,7 +179,6 @@ configure_env() {
         AUTO_ACCESS="false"
     fi
 
-    # 写入配置文件
     cat > "$config_file" << EOF
 # myapp 配置文件
 UUID=$UUID
@@ -418,7 +322,6 @@ create_service() {
 
 # 停止现有服务
 stop_existing() {
-    # 停止通过 PID 文件记录的进程
     if [ -f "$WORKDIR/myapp.pid" ]; then
         OLD_PID=$(cat "$WORKDIR/myapp.pid")
         if ps -p $OLD_PID > /dev/null 2>&1; then
@@ -428,11 +331,7 @@ stop_existing() {
         fi
         rm -f "$WORKDIR/myapp.pid"
     fi
-    
-    # 杀掉所有 myapp 相关进程
     pkill -f "$WORKDIR/myapp" 2>/dev/null || true
-    
-    # 清理 tmp 目录中的旧文件
     if [ -d "$WORKDIR/tmp" ]; then
         print_info "清理 tmp 目录..."
         rm -rf "$WORKDIR/tmp"/*
@@ -452,7 +351,7 @@ show_status() {
     print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
     print_info "  状态查看: http://localhost:$server_port/status"
     if [ "$OS" = "freebsd" ]; then
-        print_info "  nginx 代理端口: $argo_port (Argo 隧道目标)"
+        print_info "  反向代理端口: $argo_port (Argo 隧道目标)"
     fi
     echo ""
     print_info "管理命令:"
@@ -463,7 +362,6 @@ show_status() {
     print_info "  重启服务: $WORKDIR/myapp"
     echo ""
     
-    # 等待程序生成订阅
     sleep 3
     if [ -f "$WORKDIR/tmp/sub.txt" ]; then
         print_info "✓ 订阅文件已生成"
@@ -472,7 +370,6 @@ show_status() {
         echo "..."
     fi
     
-    # 显示 Argo 隧道信息
     if [ -f "$WORKDIR/tmp/boot.log" ]; then
         ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1)
         if [ -n "$ARGO_URL" ]; then
@@ -485,11 +382,10 @@ show_status() {
 # 主函数
 main() {
     echo "=========================================="
-    echo "        myapp 一键部署脚本 v2.0"
+    echo "        myapp 一键部署脚本 v2.1"
     echo "=========================================="
     echo ""
 
-    # 检测环境
     print_info "检测系统环境..."
     OS=$(detect_os)
     ARCH=$(detect_arch)
@@ -497,31 +393,25 @@ main() {
     print_info "系统架构: $ARCH"
     echo ""
     
-    # 检查并安装依赖
     check_dependencies "$OS"
 
-    # 创建固定目录
     mkdir -p "$WORKDIR"
     cd "$WORKDIR" || exit 1
     print_info "工作目录: $(pwd)"
     
-    # 二进制文件路径
     BIN_PATH="$WORKDIR/myapp"
     CONFIG_FILE="$WORKDIR/.env"
     
     print_info "二进制文件路径: $BIN_PATH"
     print_info "配置文件路径: $CONFIG_FILE"
 
-    # 停止现有服务
     stop_existing
 
-    # 下载对应版本
     if [ "$OS" = "freebsd" ]; then
         if [ "$ARCH" = "amd64" ]; then
             DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-amd64"
         else
             print_error "FreeBSD 系统暂不支持 arm64 架构"
-            print_info "支持的架构: amd64"
             exit 1
         fi
     elif [ "$OS" = "linux" ]; then
@@ -541,22 +431,18 @@ main() {
     print_info "下载地址: $DOWNLOAD_URL"
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
 
-    # 验证下载的文件
     if [ ! -f "$BIN_PATH" ]; then
         print_error "下载失败，文件不存在: $BIN_PATH"
         exit 1
     fi
 
-    # 赋予执行权限
     chmod +x "$BIN_PATH"
     print_info "已赋予执行权限"
     
-    # 显示文件信息
     print_info "文件信息:"
     ls -la "$BIN_PATH"
     file "$BIN_PATH" 2>/dev/null || true
 
-    # 配置文件
     if [ -f "$CONFIG_FILE" ]; then
         print_question "检测到已有配置文件，是否重新配置? (y/n, 默认 n): "
         read reconfigure
@@ -564,7 +450,6 @@ main() {
             configure_env "$CONFIG_FILE"
         else
             print_info "使用现有配置文件"
-            # 加载现有配置以获取端口等变量
             set -a
             source "$CONFIG_FILE"
             set +a
@@ -573,21 +458,13 @@ main() {
         configure_env "$CONFIG_FILE"
     fi
 
-    # 加载环境变量（供后续 nginx 配置使用）
     set -a
     source "$CONFIG_FILE"
     set +a
 
-    # 如果是 FreeBSD，配置并启动 nginx
-    if [ "$OS" = "freebsd" ]; then
-        setup_nginx "$OS"
-    fi
-
-    # 创建必要目录
     mkdir -p ./tmp
     print_info "已创建 tmp 目录"
 
-    # 启动程序
     print_info "启动 myapp..."
     nohup "$BIN_PATH" > ./myapp.log 2>&1 &
     
@@ -599,17 +476,13 @@ main() {
     print_info "配置文件: $CONFIG_FILE"
     print_info "临时目录: $(pwd)/tmp"
 
-    # 等待程序启动
     sleep 5
 
-    # 检查进程
     if ps -p $APP_PID > /dev/null 2>&1; then
         print_info "✓ myapp 运行正常"
         
-        # 显示服务状态
         show_status "$SERVER_PORT" "$SUB_PATH" "$ARGO_PORT"
         
-        # 询问是否安装系统服务
         print_question "是否安装为系统服务? (y/n, 默认 n): "
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
@@ -630,8 +503,6 @@ main() {
         fi
         
         print_info "=========================================="
-        
-        # 显示最近的日志
         echo ""
         print_info "最近日志 (最后 10 行):"
         tail -10 ./myapp.log 2>/dev/null || echo "无日志"
@@ -646,11 +517,5 @@ main() {
     fi
 }
 
-# 清理函数
-cleanup() {
-    print_info "脚本被中断"
-    exit 1
-}
-
-trap cleanup INT TERM
+trap 'print_info "脚本被中断"; exit 1' INT TERM
 main "$@"
