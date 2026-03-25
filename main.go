@@ -334,8 +334,6 @@ func getAvailableIP() string {
 
 // 生成 Sing-box 配置（兼容方式 - 使用不同端口）
 func generateSingBoxConfig() error {
-	availableIP := getAvailableIP()
-	
 	config := SingBoxConfig{
 		Log: SingBoxLog{
 			Level: "error",
