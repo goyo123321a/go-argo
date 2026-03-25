@@ -449,7 +449,6 @@ func generateSingBoxConfig() error {
 			},
 		},
 		Inbounds: []SingBoxInbound{
-			// 主入口 VLESS (用于 Argo 隧道)
 			{
 				Type:       "vless",
 				Tag:        "vless-main",
@@ -465,7 +464,6 @@ func generateSingBoxConfig() error {
 					Type: "tcp",
 				},
 			},
-			// VLESS WebSocket (内部)
 			{
 				Type:       "vless",
 				Tag:        "vless-ws",
@@ -483,7 +481,6 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
-			// VMess WebSocket (内部)
 			{
 				Type:       "vmess",
 				Tag:        "vmess-ws",
@@ -501,7 +498,6 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
-			// Trojan WebSocket (内部)
 			{
 				Type:       "trojan",
 				Tag:        "trojan-ws",
@@ -532,12 +528,10 @@ func generateSingBoxConfig() error {
 		},
 		Route: SingBoxRoute{
 			Rules: []SingBoxRule{
-				// 阻止 QUIC
 				{
 					Protocol: []string{"quic"},
 					Outbound: "block",
 				},
-				// 内网地址直连
 				{
 					IP: []string{
 						"10.0.0.0/8",
@@ -572,7 +566,6 @@ func generateConfig() error {
 
 // 下载文件（增强版，带重试和验证）
 func downloadFile(filePath, fileURL string) error {
-	// 重试3次
 	maxRetries := 3
 	for retry := 0; retry < maxRetries; retry++ {
 		if retry > 0 {
@@ -593,7 +586,6 @@ func downloadFile(filePath, fileURL string) error {
 			continue
 		}
 
-		// 创建临时文件
 		tempFile := filePath + ".tmp"
 		out, err := os.Create(tempFile)
 		if err != nil {
@@ -602,7 +594,6 @@ func downloadFile(filePath, fileURL string) error {
 			continue
 		}
 
-		// 下载
 		_, err = io.Copy(out, resp.Body)
 		out.Close()
 		resp.Body.Close()
@@ -613,7 +604,6 @@ func downloadFile(filePath, fileURL string) error {
 			continue
 		}
 
-		// 检查文件大小
 		info, err := os.Stat(tempFile)
 		if err != nil || info.Size() < 1024 {
 			log.Printf("下载文件太小 (%d bytes)，可能不是有效二进制文件", info.Size())
@@ -621,14 +611,12 @@ func downloadFile(filePath, fileURL string) error {
 			continue
 		}
 
-		// 重命名临时文件
 		if err := os.Rename(tempFile, filePath); err != nil {
 			log.Printf("重命名文件失败: %v", err)
 			os.Remove(tempFile)
 			continue
 		}
 
-		// 设置可执行权限
 		if err := os.Chmod(filePath, 0775); err != nil {
 			log.Printf("设置权限失败: %v", err)
 			os.Remove(filePath)
@@ -652,7 +640,6 @@ func getFilesForArchitecture(arch string) []struct {
 	osName := runtime.GOOS
 
 	if osName == "freebsd" {
-		// FreeBSD 使用脚本中的下载地址
 		baseURL := "https://github.com/eooce/test/releases/download/freebsd"
 		if arch == "arm64" {
 			baseURL = "https://github.com/eooce/test/releases/download/freebsd-arm64"
@@ -661,7 +648,6 @@ func getFilesForArchitecture(arch string) []struct {
 		files = append(files, struct{ path string; url string }{webPath, baseURL + "/sb"})
 		files = append(files, struct{ path string; url string }{botPath, baseURL + "/server"})
 
-		// 哪吒监控
 		if nezhaServer != "" && nezhaKey != "" {
 			if nezhaPort != "" {
 				files = append(files, struct{ path string; url string }{npmPath, baseURL + "/npm"})
@@ -670,7 +656,6 @@ func getFilesForArchitecture(arch string) []struct {
 			}
 		}
 	} else {
-		// Linux 系统使用原有下载源
 		if arch == "arm64" {
 			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
 			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
@@ -679,7 +664,6 @@ func getFilesForArchitecture(arch string) []struct {
 			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
 		}
 
-		// 哪吒监控
 		if nezhaServer != "" && nezhaKey != "" {
 			if nezhaPort != "" {
 				url := "https://amd64.ssss.nyc.mn/agent"
@@ -706,6 +690,13 @@ func runCore() error {
 		return fmt.Errorf("core binary not found: %s", webPath)
 	}
 
+	absPath, err := filepath.Abs(webPath)
+	if err != nil {
+		absPath = webPath
+	}
+
+	log.Printf("启动核心代理: %s", absPath)
+
 	var cmd *exec.Cmd
 
 	if runtime.GOOS == "freebsd" {
@@ -719,21 +710,27 @@ func runCore() error {
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("启动失败: %v", err)
 	}
 
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
 
+	log.Printf("✓ 核心代理已启动，PID: %d", cmd.Process.Pid)
 	time.Sleep(2 * time.Second)
+
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return fmt.Errorf("进程已退出: %v", err)
+	}
+
 	return nil
 }
 
 // 运行 Cloudflared
 func runCloudflared() error {
 	if !fileExists(botPath) {
-		return nil
+		return fmt.Errorf("bot binary not found: %s", botPath)
 	}
 
 	args := []string{"tunnel", "--edge-ip-version", "auto", "--no-autoupdate", "--protocol", "http2"}
@@ -756,7 +753,6 @@ func runCloudflared() error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
-	// 对于临时隧道，需要捕获输出
 	if argoAuth == "" || argoDomain == "" {
 		stdout, err := cmd.StdoutPipe()
 		if err == nil {
@@ -782,9 +778,12 @@ func runCloudflared() error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
+
+	log.Printf("✓ Cloudflared已启动，PID: %d", cmd.Process.Pid)
 	time.Sleep(2 * time.Second)
 	return nil
 }
@@ -796,7 +795,6 @@ func runNezha() error {
 	}
 
 	if nezhaPort == "" {
-		// 哪吒 v1
 		if !fileExists(phpPath) {
 			return nil
 		}
@@ -850,7 +848,6 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 		processMutex.Unlock()
 		time.Sleep(1 * time.Second)
 	} else {
-		// 哪吒 v0
 		if !fileExists(npmPath) {
 			return nil
 		}
@@ -887,7 +884,6 @@ func downloadFilesAndRun() error {
 
 	log.Printf("开始下载依赖文件...")
 
-	// 下载文件
 	for _, f := range files {
 		if fileExists(f.path) {
 			log.Printf("文件已存在: %s", f.path)
@@ -901,31 +897,32 @@ func downloadFilesAndRun() error {
 		}
 	}
 
-	// 验证核心二进制文件是否存在
 	if !fileExists(webPath) {
 		return fmt.Errorf("核心二进制文件不存在: %s", webPath)
 	}
 
 	log.Printf("✓ 核心二进制文件已就绪: %s", webPath)
 
-	// 运行哪吒
+	if !fileExists(botPath) {
+		log.Printf("⚠ 警告: bot 二进制文件不存在: %s", botPath)
+	} else {
+		log.Printf("✓ bot 二进制文件已就绪: %s", botPath)
+	}
+
 	if err := runNezha(); err != nil {
 		log.Printf("⚠ 哪吒监控启动失败: %v", err)
 	}
 
-	// 运行核心代理
 	if err := runCore(); err != nil {
 		return fmt.Errorf("代理运行失败: %v", err)
 	}
 
-	// 运行 Cloudflared
 	if err := runCloudflared(); err != nil {
 		log.Printf("⚠ Cloudflared启动失败: %v", err)
 	}
 
 	time.Sleep(5 * time.Second)
 
-	// 显示运行的进程信息
 	log.Printf("✓ 核心服务已启动")
 	if runtime.GOOS == "freebsd" {
 		log.Printf("  Sing-box: %s", webName)
@@ -934,9 +931,9 @@ func downloadFilesAndRun() error {
 	}
 	log.Printf("  Tunnel: %s", botName)
 	if nezhaServer != "" && nezhaKey != "" {
-		if nezhaPort != "" {
+		if nezhaPort != "" && fileExists(npmPath) {
 			log.Printf("  哪吒: %s", npmName)
-		} else {
+		} else if fileExists(phpPath) {
 			log.Printf("  哪吒: %s", phpName)
 		}
 	}
@@ -1031,7 +1028,6 @@ func cleanupOldFiles() {
 func getMetaInfo() (string, error) {
 	client := &http.Client{Timeout: 3 * time.Second}
 
-	// 尝试 ipapi.co
 	resp, err := client.Get("https://ipapi.co/json/")
 	if err == nil {
 		defer resp.Body.Close()
@@ -1045,7 +1041,6 @@ func getMetaInfo() (string, error) {
 		}
 	}
 
-	// 备用 ip-api.com
 	resp, err = client.Get("http://ip-api.com/json/")
 	if err == nil {
 		defer resp.Body.Close()
@@ -1104,20 +1099,16 @@ trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 
 	subTxt = strings.TrimSpace(subTxt)
 
-	// Base64 编码
 	encoded := base64.StdEncoding.EncodeToString([]byte(subTxt))
 
-	// 保存到文件
 	if err := os.WriteFile(subFilePath, []byte(encoded), 0644); err != nil {
 		return fmt.Errorf("保存订阅文件失败: %v", err)
 	}
 
-	// 更新内存中的订阅内容
 	subContentMutex.Lock()
 	subContent = subTxt
 	subContentMutex.Unlock()
 
-	// 标记订阅已就绪
 	subReadyMutex.Lock()
 	subReady = true
 	subReadyMutex.Unlock()
@@ -1126,7 +1117,6 @@ trojan://%s@%s:%d?security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Ftrojan
 	log.Printf("✓ 隧道域名: %s", argoDomain)
 	log.Printf("✓ 节点名称: %s", nodeName)
 
-	// 上传节点
 	uploadNodes()
 
 	return nil
@@ -1188,10 +1178,8 @@ func extractDomains() error {
 		return generateLinks(argoDomain)
 	}
 
-	// 等待 boot.log 生成
 	time.Sleep(5 * time.Second)
 
-	// 尝试多次读取
 	maxRetries := 10
 	for i := 0; i < maxRetries; i++ {
 		if fileExists(bootLogPath) {
@@ -1223,15 +1211,19 @@ func addVisitTask() {
 	client.Post("https://oooo.serv00.net/add-url", "application/json", bytes.NewBuffer(jsonData))
 }
 
-// 清理文件（90秒后）
+// 清理文件（修改后 - 不删除核心二进制文件）
 func cleanFiles() {
 	time.AfterFunc(90*time.Second, func() {
 		filesToDelete := []string{bootLogPath, configPath}
 
 		if nezhaPort != "" {
-			filesToDelete = append(filesToDelete, npmPath)
+			if fileExists(npmPath) {
+				os.Remove(npmPath)
+			}
 		} else if nezhaServer != "" && nezhaKey != "" {
-			filesToDelete = append(filesToDelete, phpPath)
+			if fileExists(phpPath) {
+				os.Remove(phpPath)
+			}
 		}
 
 		for _, file := range filesToDelete {
@@ -1257,7 +1249,6 @@ func stopAllProcesses() {
 func startHTTPServer() {
 	mux := http.NewServeMux()
 
-	// 根路由
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		indexPath := "index.html"
 		if fileExists(indexPath) {
@@ -1268,7 +1259,6 @@ func startHTTPServer() {
 		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
 
-	// 订阅路由 - 返回 base64 编码的订阅
 	mux.HandleFunc("/"+subPath, func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1303,7 +1293,6 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 订阅下载路由
 	mux.HandleFunc("/"+subPath+"/download", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1339,7 +1328,6 @@ func startHTTPServer() {
 		w.Write([]byte("订阅未就绪，请稍后重试"))
 	})
 
-	// 调试路由
 	mux.HandleFunc("/"+subPath+"/raw", func(w http.ResponseWriter, r *http.Request) {
 		var responseData []byte
 
@@ -1377,7 +1365,6 @@ func startHTTPServer() {
 		w.Write([]byte("无订阅数据"))
 	})
 
-	// 状态路由
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		subReadyMutex.RLock()
 		ready := subReady
@@ -1396,7 +1383,6 @@ func startHTTPServer() {
 		json.NewEncoder(w).Encode(status)
 	})
 
-	// 健康检查路由
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
@@ -1420,13 +1406,18 @@ func startHTTPServer() {
 func main() {
 	log.SetFlags(log.LstdFlags)
 
-	// 初始化目录
+	log.Printf("=== myapp 启动 ===")
+	log.Printf("版本: %s", Version)
+	log.Printf("系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+
 	if err := ensureDir(filePath); err != nil {
 		log.Fatal("创建目录失败:", err)
 	}
 	initPaths()
 
-	// 信号处理
+	log.Printf("工作目录: %s", filePath)
+	log.Printf("二进制文件将保存到: %s", filePath)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -1442,46 +1433,38 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// 启动 HTTP 服务
 	startHTTPServer()
 	log.Printf("✓ HTTP服务已启动 (端口: %d)", port)
 
 	time.Sleep(1 * time.Second)
 
-	// 启动前清理
 	deleteNodes()
 	cleanupOldFiles()
 
-	// 配置 Argo 隧道
 	argoType()
 
-	// 生成配置
 	if err := generateConfig(); err != nil {
 		log.Printf("⚠ 生成配置失败: %v", err)
 	}
 
-	// 下载并运行依赖
 	if err := downloadFilesAndRun(); err != nil {
 		log.Printf("⚠ 启动失败: %v", err)
 	}
 
-	// 提取域名并生成订阅
 	if err := extractDomains(); err != nil {
 		log.Printf("⚠ 获取隧道域名失败: %v", err)
 	}
 
-	// 添加自动访问任务
 	addVisitTask()
 
-	// 清理文件
 	cleanFiles()
 
-	// 简化启动成功日志
 	log.Printf("✓ myapp 运行中")
 	log.Printf("  订阅: /%s", subPath)
 	log.Printf("  下载: /%s/download", subPath)
 	log.Printf("  系统: %s/%s", runtime.GOOS, runtime.GOARCH)
+	log.Printf("  核心文件: %s", webPath)
+	log.Printf("  隧道文件: %s", botPath)
 
-	// 保持程序运行
 	select {}
 }
