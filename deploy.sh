@@ -17,7 +17,7 @@ print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 
 # 固定工作目录
 WORKDIR="$HOME/myapp"
-VERSION="v1.0.0.12"
+VERSION="v1.0.0.13"
 
 # 检测系统架构
 detect_arch() {
