@@ -33,7 +33,7 @@ var (
 	uploadURL    = getEnv("UPLOAD_URL", "")
 	projectURL   = getEnv("PROJECT_URL", "")
 	autoAccess   = getEnvBool("AUTO_ACCESS", false)
-	filePath     = getEnv("FILE_PATH", "/app/tmp")
+	filePath     = getEnv("FILE_PATH", "./tmp")
 	subPath      = getEnv("SUB_PATH", "sub")
 	port         = getEnvInt("SERVER_PORT", 7860)
 	uuid         = getEnv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
@@ -157,25 +157,30 @@ type TrojanClient struct {
 }
 
 // Sing-box 配置结构体
-type SingBoxConfig struct {
-	Log       SingBoxLog         `json:"log"`
-	DNS       SingBoxDNS         `json:"dns"`
-	Inbounds  []SingBoxInbound   `json:"inbounds"`
-	Outbounds []SingBoxOutbound  `json:"outbounds"`
-	Route     SingBoxRoute       `json:"route"`
-}
-
-type SingBoxLog struct {
-	Level string `json:"level"`
-}
-
 type SingBoxDNS struct {
 	Servers []SingBoxDNSServer `json:"servers"`
 }
 
 type SingBoxDNSServer struct {
-	Address string `json:"address,omitempty"`
+	Address string `json:"address"`
 	Tag     string `json:"tag,omitempty"`
+}
+
+type SingBoxSniffing struct {
+	Enabled      bool     `json:"enabled"`
+	DestOverride []string `json:"destOverride"`
+}
+
+type SingBoxConfig struct {
+	Log       SingBoxLog          `json:"log"`
+	DNS       SingBoxDNS          `json:"dns"`
+	Inbounds  []SingBoxInbound    `json:"inbounds"`
+	Outbounds []SingBoxOutbound   `json:"outbounds"`
+	Route     SingBoxRoute        `json:"route"`
+}
+
+type SingBoxLog struct {
+	Level string `json:"level"`
 }
 
 type SingBoxInbound struct {
@@ -185,9 +190,9 @@ type SingBoxInbound struct {
 	ListenPort   int                    `json:"listen_port,omitempty"`
 	Users        []SingBoxUser          `json:"users,omitempty"`
 	Transport    *SingBoxTransport      `json:"transport,omitempty"`
+	Sniffing     *SingBoxSniffing       `json:"sniffing,omitempty"`
 	Multiplex    *SingBoxMultiplex      `json:"multiplex,omitempty"`
 	TLSA         *SingBoxTLSA           `json:"tls,omitempty"`
-	Sniffing     *SingBoxSniffing       `json:"sniffing,omitempty"`
 }
 
 type SingBoxUser struct {
@@ -214,11 +219,6 @@ type SingBoxTLSA struct {
 	Insecure   bool   `json:"insecure,omitempty"`
 }
 
-type SingBoxSniffing struct {
-	Enabled      bool     `json:"enabled"`
-	DestOverride []string `json:"dest_override,omitempty"`
-}
-
 type SingBoxOutbound struct {
 	Type       string             `json:"type"`
 	Tag        string             `json:"tag"`
@@ -235,10 +235,9 @@ type SingBoxRoute struct {
 }
 
 type SingBoxRule struct {
-	Outbound string   `json:"outbound"`
 	Protocol []string `json:"protocol,omitempty"`
 	IP       []string `json:"ip,omitempty"`
-	Domain   []string `json:"domain,omitempty"`
+	Outbound string   `json:"outbound"`
 }
 
 // 辅助函数
@@ -266,7 +265,7 @@ func getEnvBool(key string, defaultValue bool) bool {
 }
 
 func generateRandomName() string {
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, 6)
 	for i := range b {
 		b[i] = chars[randInt(len(chars))]
@@ -313,163 +312,6 @@ func getSystemArchitecture() string {
 	default:
 		return "amd64"
 	}
-}
-
-// 验证可执行文件
-func validateExecutable(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("文件不存在: %v", err)
-	}
-	
-	if info.Size() < 1024 {
-		return fmt.Errorf("文件太小: %d bytes", info.Size())
-	}
-	
-	if info.Mode()&0111 == 0 {
-		return fmt.Errorf("文件不可执行")
-	}
-	
-	// 尝试打开文件
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	
-	// 读取前4个字节
-	header := make([]byte, 4)
-	if _, err := f.Read(header); err != nil {
-		return err
-	}
-	
-	// 检查 ELF 魔数
-	if header[0] == 0x7F && header[1] == 0x45 && header[2] == 0x4C && header[3] == 0x46 {
-		return nil
-	}
-	
-	return fmt.Errorf("不是有效的 ELF 可执行文件")
-}
-
-// 下载文件（增强版）
-func downloadFile(filePath, fileURL string) error {
-	// 创建临时文件
-	tempFile := filePath + ".tmp"
-	
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(fileURL)
-	if err != nil {
-		return fmt.Errorf("请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP状态码错误: %d", resp.StatusCode)
-	}
-
-	// 创建文件
-	out, err := os.Create(tempFile)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	// 下载
-	written, err := io.Copy(out, resp.Body)
-	if err != nil {
-		os.Remove(tempFile)
-		return err
-	}
-	out.Close()
-
-	// 检查文件大小
-	if written < 1024 {
-		os.Remove(tempFile)
-		return fmt.Errorf("文件太小 (%d bytes)，可能不是有效二进制文件", written)
-	}
-
-	// 重命名临时文件
-	if err := os.Rename(tempFile, filePath); err != nil {
-		os.Remove(tempFile)
-		return err
-	}
-
-	// 设置可执行权限
-	if err := os.Chmod(filePath, 0775); err != nil {
-		return err
-	}
-
-	log.Printf("✓ 下载成功: %s (%.2f MB)", filePath, float64(written)/1024/1024)
-	return nil
-}
-
-// 获取需要下载的文件列表
-func getFilesForArchitecture(arch string) []struct {
-	path string
-	url  string
-} {
-	var files []struct{ path string; url string }
-	
-	osName := getSystemOS()
-	
-	// 根据操作系统选择下载源
-	if osName == "freebsd" {
-		// FreeBSD 使用 bash 脚本中的下载地址
-		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{webPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/sb"})
-			files = append(files, struct{ path string; url string }{botPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/server"})
-		} else {
-			files = append(files, struct{ path string; url string }{webPath, "https://github.com/eooce/test/releases/download/freebsd/sb"})
-			files = append(files, struct{ path string; url string }{botPath, "https://github.com/eooce/test/releases/download/freebsd/server"})
-		}
-		
-		// 哪吒监控
-		if nezhaServer != "" && nezhaKey != "" {
-			if nezhaPort != "" {
-				// v0 哪吒使用 npm
-				if arch == "arm64" {
-					files = append(files, struct{ path string; url string }{npmPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/npm"})
-				} else {
-					files = append(files, struct{ path string; url string }{npmPath, "https://github.com/eooce/test/releases/download/freebsd/npm"})
-				}
-			} else {
-				// v1 哪吒使用 v1
-				if arch == "arm64" {
-					files = append(files, struct{ path string; url string }{phpPath, "https://github.com/eooce/test/releases/download/freebsd-arm64/v1"})
-				} else {
-					files = append(files, struct{ path string; url string }{phpPath, "https://github.com/eooce/test/releases/download/freebsd/v1"})
-				}
-			}
-		}
-	} else {
-		// Linux 系统使用原有下载源
-		if arch == "arm64" {
-			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
-			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
-		} else {
-			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
-			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
-		}
-		
-		// 哪吒监控
-		if nezhaServer != "" && nezhaKey != "" {
-			if nezhaPort != "" {
-				url := "https://amd64.ssss.nyc.mn/agent"
-				if arch == "arm64" {
-					url = "https://arm64.ssss.nyc.mn/agent"
-				}
-				files = append([]struct{ path string; url string }{{npmPath, url}}, files...)
-			} else {
-				url := "https://amd64.ssss.nyc.mn/v1"
-				if arch == "arm64" {
-					url = "https://arm64.ssss.nyc.mn/v1"
-				}
-				files = append([]struct{ path string; url string }{{phpPath, url}}, files...)
-			}
-		}
-	}
-
-	return files
 }
 
 // 生成 Xray 配置（Linux 系统）
@@ -612,6 +454,7 @@ func generateSingBoxConfig() error {
 			},
 		},
 		Inbounds: []SingBoxInbound{
+			// 主入口 VLESS (用于 Argo 隧道)
 			{
 				Type:       "vless",
 				Tag:        "vless-main",
@@ -627,6 +470,7 @@ func generateSingBoxConfig() error {
 					Type: "tcp",
 				},
 			},
+			// VLESS WebSocket (内部) - 使用 localhost
 			{
 				Type:       "vless",
 				Tag:        "vless-ws",
@@ -644,6 +488,7 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
+			// VMess WebSocket (内部)
 			{
 				Type:       "vmess",
 				Tag:        "vmess-ws",
@@ -661,6 +506,7 @@ func generateSingBoxConfig() error {
 					DestOverride: []string{"http", "tls"},
 				},
 			},
+			// Trojan WebSocket (内部)
 			{
 				Type:       "trojan",
 				Tag:        "trojan-ws",
@@ -691,10 +537,12 @@ func generateSingBoxConfig() error {
 		},
 		Route: SingBoxRoute{
 			Rules: []SingBoxRule{
+				// 阻止 QUIC
 				{
 					Protocol: []string{"quic"},
 					Outbound: "block",
 				},
+				// 内网地址直连
 				{
 					IP: []string{
 						"10.0.0.0/8",
@@ -711,7 +559,7 @@ func generateSingBoxConfig() error {
 			Final: "direct",
 		},
 	}
-	
+
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
@@ -727,19 +575,109 @@ func generateConfig() error {
 	return generateXrayConfig()
 }
 
-// 运行核心代理（Xray 或 Sing-box）
+// 下载文件
+func downloadFile(filePath, fileURL string) error {
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(fileURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// 设置可执行权限
+	if err := os.Chmod(filePath, 0775); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// 获取需要下载的文件列表
+func getFilesForArchitecture(arch string) []struct {
+	path string
+	url  string
+} {
+	var files []struct{ path string; url string }
+
+	osName := getSystemOS()
+
+	// 根据操作系统选择下载源
+	if osName == "freebsd" {
+		// FreeBSD 使用脚本中的下载地址
+		baseURL := "https://github.com/eooce/test/releases/download/freebsd"
+		if arch == "arm64" {
+			baseURL = "https://github.com/eooce/test/releases/download/freebsd-arm64"
+		}
+
+		// sb - sing-box 核心
+		files = append(files, struct{ path string; url string }{webPath, baseURL + "/sb"})
+		// server - cloudflared 隧道
+		files = append(files, struct{ path string; url string }{botPath, baseURL + "/server"})
+
+		// 哪吒监控相关
+		if nezhaServer != "" && nezhaKey != "" {
+			if nezhaPort != "" {
+				// v0 哪吒使用 npm
+				files = append(files, struct{ path string; url string }{npmPath, baseURL + "/npm"})
+			} else {
+				// v1 哪吒使用 v1
+				files = append(files, struct{ path string; url string }{phpPath, baseURL + "/v1"})
+			}
+		}
+	} else {
+		// Linux 系统使用原有下载源
+		if arch == "arm64" {
+			files = append(files, struct{ path string; url string }{webPath, "https://arm64.ssss.nyc.mn/web"})
+			files = append(files, struct{ path string; url string }{botPath, "https://arm64.ssss.nyc.mn/bot"})
+		} else {
+			files = append(files, struct{ path string; url string }{webPath, "https://amd64.ssss.nyc.mn/web"})
+			files = append(files, struct{ path string; url string }{botPath, "https://amd64.ssss.nyc.mn/bot"})
+		}
+
+		// 哪吒监控
+		if nezhaServer != "" && nezhaKey != "" {
+			if nezhaPort != "" {
+				url := "https://amd64.ssss.nyc.mn/agent"
+				if arch == "arm64" {
+					url = "https://arm64.ssss.nyc.mn/agent"
+				}
+				files = append([]struct{ path string; url string }{{npmPath, url}}, files...)
+			} else {
+				url := "https://amd64.ssss.nyc.mn/v1"
+				if arch == "arm64" {
+					url = "https://arm64.ssss.nyc.mn/v1"
+				}
+				files = append([]struct{ path string; url string }{{phpPath, url}}, files...)
+			}
+		}
+	}
+
+	return files
+}
+
+// 运行核心代理
 func runCore() error {
 	if !fileExists(webPath) {
 		return fmt.Errorf("core binary not found: %s", webPath)
 	}
-	
-	// 验证文件
-	if err := validateExecutable(webPath); err != nil {
-		return fmt.Errorf("core binary invalid: %v", err)
-	}
 
 	var cmd *exec.Cmd
-	
+
 	if runtime.GOOS == "freebsd" {
 		// FreeBSD 使用 sing-box
 		cmd = exec.Command(webPath, "run", "-c", configPath)
@@ -747,19 +685,19 @@ func runCore() error {
 		// Linux 使用 Xray
 		cmd = exec.Command(webPath, "-c", configPath)
 	}
-	
+
 	cmd.Dir = filePath
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	
+
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	
+
 	processMutex.Lock()
 	processes = append(processes, cmd.Process)
 	processMutex.Unlock()
-	
+
 	time.Sleep(2 * time.Second)
 	return nil
 }
@@ -767,12 +705,6 @@ func runCore() error {
 // 运行 Cloudflared
 func runCloudflared() error {
 	if !fileExists(botPath) {
-		return nil
-	}
-	
-	// 验证文件
-	if err := validateExecutable(botPath); err != nil {
-		log.Printf("⚠ Cloudflared 文件无效: %v", err)
 		return nil
 	}
 
@@ -837,6 +769,10 @@ func runNezha() error {
 
 	if nezhaPort == "" {
 		// 哪吒 v1
+		if !fileExists(phpPath) {
+			return nil
+		}
+
 		port := ""
 		if strings.Contains(nezhaServer, ":") {
 			parts := strings.Split(nezhaServer, ":")
@@ -874,25 +810,23 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 			return err
 		}
 
-		if fileExists(phpPath) {
-			if err := validateExecutable(phpPath); err != nil {
-				log.Printf("⚠ 哪吒 v1 文件无效: %v", err)
-				return nil
-			}
-			cmd := exec.Command(phpPath, "-c", configYamlPath)
-			cmd.Dir = filePath
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			if err := cmd.Start(); err != nil {
-				return err
-			}
-			processMutex.Lock()
-			processes = append(processes, cmd.Process)
-			processMutex.Unlock()
-			time.Sleep(1 * time.Second)
+		cmd := exec.Command(phpPath, "-c", configYamlPath)
+		cmd.Dir = filePath
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			return err
 		}
+		processMutex.Lock()
+		processes = append(processes, cmd.Process)
+		processMutex.Unlock()
+		time.Sleep(1 * time.Second)
 	} else {
 		// 哪吒 v0
+		if !fileExists(npmPath) {
+			return nil
+		}
+
 		args := []string{"-s", nezhaServer + ":" + nezhaPort, "-p", nezhaKey}
 		tlsPorts := []string{"443", "8443", "2096", "2087", "2083", "2053"}
 		for _, p := range tlsPorts {
@@ -903,23 +837,17 @@ uuid: %s`, nezhaKey, nezhaServer, nezhaTLS, uuid)
 		}
 		args = append(args, "--disable-auto-update", "--report-delay", "4", "--skip-conn", "--skip-procs")
 
-		if fileExists(npmPath) {
-			if err := validateExecutable(npmPath); err != nil {
-				log.Printf("⚠ 哪吒 v0 文件无效: %v", err)
-				return nil
-			}
-			cmd := exec.Command(npmPath, args...)
-			cmd.Dir = filePath
-			cmd.Stdout = nil
-			cmd.Stderr = nil
-			if err := cmd.Start(); err != nil {
-				return err
-			}
-			processMutex.Lock()
-			processes = append(processes, cmd.Process)
-			processMutex.Unlock()
-			time.Sleep(1 * time.Second)
+		cmd := exec.Command(npmPath, args...)
+		cmd.Dir = filePath
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+		if err := cmd.Start(); err != nil {
+			return err
 		}
+		processMutex.Lock()
+		processes = append(processes, cmd.Process)
+		processMutex.Unlock()
+		time.Sleep(1 * time.Second)
 	}
 	return nil
 }
@@ -930,45 +858,26 @@ func downloadFilesAndRun() error {
 	files := getFilesForArchitecture(arch)
 
 	log.Printf("开始下载依赖文件...")
-	
+
 	// 下载文件
 	for _, f := range files {
 		if fileExists(f.path) {
 			log.Printf("文件已存在: %s", f.path)
-			// 验证已存在的文件
-			if err := validateExecutable(f.path); err != nil {
-				log.Printf("⚠ 文件验证失败: %v，重新下载", err)
-				os.Remove(f.path)
-			} else {
-				continue
-			}
+			continue
 		}
-		
+
 		log.Printf("正在下载: %s", f.url)
 		if err := downloadFile(f.path, f.url); err != nil {
 			log.Printf("⚠ 下载失败 %s: %v", f.url, err)
 			continue
 		}
-		
-		// 验证下载的文件
-		if err := validateExecutable(f.path); err != nil {
-			log.Printf("⚠ 文件验证失败: %v", err)
-			os.Remove(f.path)
-			continue
-		}
-		
-		log.Printf("✓ 下载完成: %s", f.path)
 	}
 
 	// 验证核心二进制文件是否存在
 	if !fileExists(webPath) {
 		return fmt.Errorf("核心二进制文件不存在: %s", webPath)
 	}
-	
-	if err := validateExecutable(webPath); err != nil {
-		return fmt.Errorf("核心二进制文件无效: %v", err)
-	}
-	
+
 	log.Printf("✓ 核心二进制文件已就绪: %s", webPath)
 
 	// 运行哪吒
@@ -998,9 +907,9 @@ func downloadFilesAndRun() error {
 	log.Printf("  Tunnel: %s", botName)
 	if nezhaServer != "" && nezhaKey != "" {
 		if nezhaPort != "" {
-			log.Printf("  哪吒(v0): %s", npmName)
+			log.Printf("  哪吒: %s", npmName)
 		} else {
-			log.Printf("  哪吒(v1): %s", phpName)
+			log.Printf("  哪吒: %s", phpName)
 		}
 	}
 
@@ -1300,6 +1209,8 @@ func cleanFiles() {
 		for _, file := range filesToDelete {
 			os.Remove(file)
 		}
+
+		// 保留 webPath 和 botPath 不删除，避免程序退出
 	})
 }
 
@@ -1322,13 +1233,11 @@ func startHTTPServer() {
 
 	// 根路由
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// 检查是否有 index.html 文件（如果存在则提供）
 		indexPath := "index.html"
 		if fileExists(indexPath) {
 			http.ServeFile(w, r, indexPath)
 			return
 		}
-		// 否则返回简单提示
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, "myapp 运行中<br><br>订阅地址: /%s", subPath)
 	})
