@@ -463,7 +463,7 @@ func generateXrayConfig() error {
 // 生成 Sing-box 配置（FreeBSD 系统）
 func generateSingBoxConfig() error {
 	// 获取可用 IP
-	//availableIP := getAvailableIP()
+	// availableIP := getAvailableIP()
 	
 	config := SingBoxConfig{
 		Log: SingBoxLog{
