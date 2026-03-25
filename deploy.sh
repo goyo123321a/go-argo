@@ -1,5 +1,8 @@
 #!/bin/bash
+
 # 一键部署 myapp - 自动下载、配置并运行
+# 支持 Linux 和 FreeBSD
+# 版本: v2.0
 
 set -e
 
@@ -59,6 +62,15 @@ check_dependencies() {
                 exit 1
             }
         fi
+        
+        # 检查 nginx 是否安装，未安装则尝试安装
+        if ! command -v nginx &> /dev/null; then
+            print_info "正在安装 nginx..."
+            pkg install -y nginx || {
+                print_error "安装 nginx 失败"
+                exit 1
+            }
+        fi
     elif [ "$os" = "linux" ]; then
         if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
             print_error "请安装 curl 或 wget"
@@ -87,6 +99,73 @@ download_file() {
         print_error "下载失败: $url"
         exit 1
     fi
+}
+
+# 配置 nginx (仅 FreeBSD)
+setup_nginx() {
+    local os=$1
+    [ "$os" != "freebsd" ] && return
+    
+    local argo_port="${ARGO_PORT:-8001}"
+    local server_port="${SERVER_PORT:-7860}"
+    
+    # 创建 nginx 配置目录（用户目录下）
+    NGINX_CONF_DIR="$HOME/nginx_conf"
+    mkdir -p "$NGINX_CONF_DIR"
+    
+    # 生成 nginx 配置文件
+    cat > "$NGINX_CONF_DIR/argo.conf" << EOF
+server {
+    listen $argo_port;
+    server_name localhost;
+
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+
+    location /vless-argo {
+        proxy_pass http://127.0.0.1:3002;
+    }
+    location /vmess-argo {
+        proxy_pass http://127.0.0.1:3003;
+    }
+    location /trojan-argo {
+        proxy_pass http://127.0.0.1:3004;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:$server_port;
+    }
+}
+EOF
+
+    # 检查 nginx 主配置文件是否已包含该目录
+    if ! grep -q "include.*$NGINX_CONF_DIR/\*\.conf" /usr/local/etc/nginx/nginx.conf 2>/dev/null; then
+        print_warn "请手动将以下行添加到 /usr/local/etc/nginx/nginx.conf 的 http 块内:"
+        echo "    include $NGINX_CONF_DIR/*.conf;"
+        print_info "或者运行以下命令自动添加:"
+        echo "  sudo sed -i '' '/http {/a\\\n    include $NGINX_CONF_DIR/*.conf;\\\n' /usr/local/etc/nginx/nginx.conf"
+        # 如果用户没有 root 权限，提示手动操作
+        if [ "$(id -u)" -eq 0 ]; then
+            sed -i '' '/http {/a\
+    include '"$NGINX_CONF_DIR"'/*.conf;
+' /usr/local/etc/nginx/nginx.conf
+            print_info "已自动添加 include 指令"
+        else
+            print_warn "您没有 root 权限，请手动添加 include 指令到 nginx 主配置"
+        fi
+    fi
+    
+    # 启动或重载 nginx
+    if pgrep -x nginx >/dev/null; then
+        nginx -s reload
+    else
+        nginx
+    fi
+    print_info "nginx 已启动，监听端口 $argo_port"
 }
 
 # 交互式配置
@@ -364,6 +443,7 @@ stop_existing() {
 show_status() {
     local server_port=$1
     local sub_path=$2
+    local argo_port=$3
     
     echo ""
     print_info "=========================================="
@@ -371,6 +451,9 @@ show_status() {
     print_info "  订阅地址: http://localhost:$server_port/$sub_path"
     print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
     print_info "  状态查看: http://localhost:$server_port/status"
+    if [ "$OS" = "freebsd" ]; then
+        print_info "  nginx 代理端口: $argo_port (Argo 隧道目标)"
+    fi
     echo ""
     print_info "管理命令:"
     print_info "  查看日志: tail -f $WORKDIR/myapp.log"
@@ -402,7 +485,7 @@ show_status() {
 # 主函数
 main() {
     echo "=========================================="
-    echo "        myapp 一键部署脚本 v1.0"
+    echo "        myapp 一键部署脚本 v2.0"
     echo "=========================================="
     echo ""
 
@@ -481,19 +564,28 @@ main() {
             configure_env "$CONFIG_FILE"
         else
             print_info "使用现有配置文件"
+            # 加载现有配置以获取端口等变量
+            set -a
+            source "$CONFIG_FILE"
+            set +a
         fi
     else
         configure_env "$CONFIG_FILE"
     fi
 
-    # 创建必要目录
-    mkdir -p ./tmp
-    print_info "已创建 tmp 目录"
-
-    # 加载环境变量
+    # 加载环境变量（供后续 nginx 配置使用）
     set -a
     source "$CONFIG_FILE"
     set +a
+
+    # 如果是 FreeBSD，配置并启动 nginx
+    if [ "$OS" = "freebsd" ]; then
+        setup_nginx "$OS"
+    fi
+
+    # 创建必要目录
+    mkdir -p ./tmp
+    print_info "已创建 tmp 目录"
 
     # 启动程序
     print_info "启动 myapp..."
@@ -515,7 +607,7 @@ main() {
         print_info "✓ myapp 运行正常"
         
         # 显示服务状态
-        show_status "$SERVER_PORT" "$SUB_PATH"
+        show_status "$SERVER_PORT" "$SUB_PATH" "$ARGO_PORT"
         
         # 询问是否安装系统服务
         print_question "是否安装为系统服务? (y/n, 默认 n): "
