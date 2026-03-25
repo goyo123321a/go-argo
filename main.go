@@ -1104,34 +1104,43 @@ func startReverseProxy() {
 	}
 	defaultTarget := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			path := req.URL.Path
-			for prefix, target := range routes {
-				if strings.HasPrefix(path, prefix) {
-					targetURL, _ := url.Parse(target)
-					req.URL.Scheme = targetURL.Scheme
-					req.URL.Host = targetURL.Host
-					req.Host = targetURL.Host
-					return
-				}
+	director := func(req *http.Request) {
+		path := req.URL.Path
+		target := defaultTarget
+		for prefix, t := range routes {
+			if strings.HasPrefix(path, prefix) {
+				target = t
+				break
 			}
-			targetURL, _ := url.Parse(defaultTarget)
-			req.URL.Scheme = targetURL.Scheme
-			req.URL.Host = targetURL.Host
-			req.Host = targetURL.Host
-		},
+		}
+		targetURL, _ := url.Parse(target)
+		req.URL.Scheme = targetURL.Scheme
+		req.URL.Host = targetURL.Host
+		req.Host = targetURL.Host
+
+		// 处理 WebSocket 升级
+		if req.Header.Get("Upgrade") == "websocket" {
+			req.Header.Set("Connection", "upgrade")
+			log.Printf("[反向代理] WebSocket 升级请求: %s -> %s", path, target)
+		}
 	}
+
+	proxy := &httputil.ReverseProxy{
+		Director:  director,
+		Transport: http.DefaultTransport, // 支持 WebSocket 升级
+		ErrorLog:  log.Default(),
+	}
+
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", argoPort),
 		Handler: proxy,
 	}
 	go func() {
+		log.Printf("✓ 反向代理已启动 (端口: %d)", argoPort)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("反向代理错误: %v", err)
 		}
 	}()
-	log.Printf("✓ 反向代理已启动 (端口: %d)", argoPort)
 }
 
 // HTTP 服务
