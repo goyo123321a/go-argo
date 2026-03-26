@@ -1,7 +1,7 @@
 #!/bin/bash
-# 一键部署 myapp - 自动下载、配置并运行
+# 一键部署 myapp - 纯 Argo 隧道模式
 # 支持 Linux (Xray) 和 FreeBSD (Sing-box)
-# 版本: v3.1
+# 版本: v4.0
 
 set -e
 
@@ -54,6 +54,20 @@ check_dependencies() {
             exit 1
         fi
     fi
+    
+    # 检查 OpenSSL (用于生成证书)
+    if ! command -v openssl &> /dev/null; then
+        print_warn "未找到 openssl，将尝试安装..."
+        if [ "$os" = "freebsd" ]; then
+            pkg install -y openssl || print_warn "openssl 安装失败，证书可能无法生成"
+        elif [ "$os" = "linux" ]; then
+            if command -v apt-get &> /dev/null; then
+                apt-get update && apt-get install -y openssl || print_warn "openssl 安装失败"
+            elif command -v yum &> /dev/null; then
+                yum install -y openssl || print_warn "openssl 安装失败"
+            fi
+        fi
+    fi
 }
 
 # 下载文件
@@ -78,62 +92,50 @@ download_file() {
     fi
 }
 
-# 交互式配置（根据系统使用不同变量名）
+# 交互式配置
 configure_env() {
     local config_file=$1
     local mode=$2
-    print_info "开始配置环境变量（$mode 模式）..."
+    print_info "开始配置环境变量（纯 Argo 隧道模式）..."
     echo ""
-
-    # HTTP 服务端口配置
-    read -p "请输入 HTTP 服务端口 (留空使用默认 7860): " input_port
-    SERVER_PORT="${input_port:-7860}"
-    print_info "HTTP 服务端口: $SERVER_PORT"
-
-    # 订阅路径配置
-    read -p "请输入订阅路径 (留空使用默认 sub): " input_sub_path
-    SUB_PATH="${input_sub_path:-sub}"
-    print_info "订阅路径: $SUB_PATH"
-
-    # 隧道端口配置（根据系统使用不同变量名）
-    if [ "$mode" = "sing-box" ]; then
-        read -p "请输入 VLESS 端口 (留空使用默认 8001): " input_vless_port
-        VLESS_PORT="${input_vless_port:-8001}"
-        print_info "VLESS 端口: $VLESS_PORT"
-        ARGO_PORT="$VLESS_PORT"  # 兼容内部使用
-    else
-        read -p "请输入 Argo 隧道端口 (留空使用默认 8001): " input_argo_port
-        ARGO_PORT="${input_argo_port:-8001}"
-        print_info "Argo 隧道端口: $ARGO_PORT"
-    fi
-
-    # UUID 配置
-    echo ""
-    read -p "请输入 UUID (留空使用默认值): " input_uuid
+    
+    # 基础配置
+    read -p "请输入 UUID (留空将自动生成): " input_uuid
     if [ -z "$input_uuid" ]; then
-        UUID="9afd1229-b893-40c1-84dd-51e7ce204913"
-        print_info "使用默认 UUID: $UUID"
+        UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "9afd1229-b893-40c1-84dd-51e7ce204913")
+        print_info "自动生成 UUID: $UUID"
     else
         UUID="$input_uuid"
     fi
-
-    # CFIP 和 CFPORT 配置
+    
+    # HTTP 服务端口
+    read -p "请输入 HTTP 服务端口 (留空使用默认 7860): " input_port
+    SERVER_PORT="${input_port:-7860}"
+    print_info "HTTP 服务端口: $SERVER_PORT"
+    
+    # 订阅路径
+    read -p "请输入订阅路径 (留空使用默认 sub): " input_sub_path
+    SUB_PATH="${input_sub_path:-sub}"
+    print_info "订阅路径: $SUB_PATH"
+    
+    # Argo 本地端口 (Sing-box/Xray 监听的端口)
+    read -p "请输入 Argo 本地端口 (留空使用默认 8001): " input_argo_port
+    ARGO_PORT="${input_argo_port:-8001}"
+    print_info "Argo 本地端口: $ARGO_PORT (Sing-box/Xray 将监听此端口)"
+    
+    # Cloudflare 优选配置
     echo ""
     read -p "请输入优选域名/IP (留空使用默认 cf.877774.xyz): " input_cfip
-    if [ -z "$input_cfip" ]; then
-        CFIP="cf.877774.xyz"
-    else
-        CFIP="$input_cfip"
-    fi
-
+    CFIP="${input_cfip:-cf.877774.xyz}"
+    
     read -p "请输入端口 (留空使用默认 443): " input_cfport
     CFPORT="${input_cfport:-443}"
-
+    
     # 节点名称
     echo ""
-    read -p "请输入节点名称 (留空使用自动获取): " input_name
+    read -p "请输入节点名称前缀 (留空使用自动获取): " input_name
     NAME="$input_name"
-
+    
     # Argo Tunnel 配置
     echo ""
     print_question "是否使用固定隧道? (y/n, 默认 n): "
@@ -146,7 +148,7 @@ configure_env() {
             use_fixed_tunnel="n"
         fi
     fi
-
+    
     # 哪吒监控配置
     echo ""
     print_question "是否使用哪吒监控? (y/n, 默认 n): "
@@ -168,7 +170,7 @@ configure_env() {
             use_nezha="n"
         fi
     fi
-
+    
     # 自动上传配置
     echo ""
     print_question "是否自动上传订阅? (y/n, 默认 n): "
@@ -181,7 +183,7 @@ configure_env() {
             use_upload="n"
         fi
     fi
-
+    
     # 自动保活配置
     echo ""
     print_question "是否开启自动保活? (y/n, 默认 n): "
@@ -191,39 +193,28 @@ configure_env() {
     else
         AUTO_ACCESS="false"
     fi
-
+    
     # 写入配置文件
     cat > "$config_file" << EOF
-# myapp 配置文件
+# myapp 配置文件 - 纯 Argo 隧道模式
 UUID=$UUID
 CFIP=$CFIP
 CFPORT=$CFPORT
 NAME=$NAME
 SERVER_PORT=$SERVER_PORT
 SUB_PATH=$SUB_PATH
+ARGO_PORT=$ARGO_PORT
 FILE_PATH=./tmp
 AUTO_ACCESS=$AUTO_ACCESS
 EOF
-
-    # 根据模式写入不同端口变量
-    if [ "$mode" = "sing-box" ]; then
-        cat >> "$config_file" << EOF
-VLESS_PORT=$VLESS_PORT
-ARGO_PORT=$ARGO_PORT
-EOF
-    else
-        cat >> "$config_file" << EOF
-ARGO_PORT=$ARGO_PORT
-EOF
-    fi
-
+    
     if [[ "$use_fixed_tunnel" =~ ^[Yy]$ ]]; then
         cat >> "$config_file" << EOF
 ARGO_DOMAIN=$ARGO_DOMAIN
 ARGO_AUTH=$ARGO_AUTH
 EOF
     fi
-
+    
     if [[ "$use_nezha" =~ ^[Yy]$ ]]; then
         cat >> "$config_file" << EOF
 NEZHA_SERVER=$NEZHA_SERVER
@@ -231,14 +222,14 @@ NEZHA_PORT=$NEZHA_PORT
 NEZHA_KEY=$NEZHA_KEY
 EOF
     fi
-
+    
     if [[ "$use_upload" =~ ^[Yy]$ ]]; then
         cat >> "$config_file" << EOF
 UPLOAD_URL=$UPLOAD_URL
 PROJECT_URL=$PROJECT_URL
 EOF
     fi
-
+    
     print_info "配置文件已保存: $config_file"
 }
 
@@ -248,9 +239,10 @@ create_systemd_service() {
     local config_file=$2
     local service_file="/etc/systemd/system/myapp.service"
     local current_user=$(whoami)
+    
     cat > "$service_file" << EOF
 [Unit]
-Description=myapp Service
+Description=myapp Argo Tunnel Service
 After=network.target
 
 [Service]
@@ -261,10 +253,13 @@ EnvironmentFile=$config_file
 ExecStart=$bin_path
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    
     print_info "systemd 服务文件已创建: $service_file"
 }
 
@@ -274,6 +269,7 @@ create_rc_service() {
     local config_file=$2
     local rc_file="/usr/local/etc/rc.d/myapp"
     local current_user=$(whoami)
+    
     cat > "$rc_file" << EOF
 #!/bin/sh
 #
@@ -301,21 +297,13 @@ stop_postcmd="cleanup_pid"
 
 export_env() {
     if [ -f "${config_file}" ]; then
-        . "${config_file}"
-        export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH FILE_PATH AUTO_ACCESS
-        # 根据系统导出不同端口变量
-        if [ -n "\$VLESS_PORT" ]; then
-            export VLESS_PORT ARGO_PORT
-        else
-            export ARGO_PORT
-        fi
-        [ -n "\$ARGO_DOMAIN" ] && export ARGO_DOMAIN
-        [ -n "\$ARGO_AUTH" ] && export ARGO_AUTH
-        [ -n "\$NEZHA_SERVER" ] && export NEZHA_SERVER
-        [ -n "\$NEZHA_PORT" ] && export NEZHA_PORT
-        [ -n "\$NEZHA_KEY" ] && export NEZHA_KEY
-        [ -n "\$UPLOAD_URL" ] && export UPLOAD_URL
-        [ -n "\$PROJECT_URL" ] && export PROJECT_URL
+        # 跳过注释行，导出所有变量
+        while IFS='=' read -r key value; do
+            case "\$key" in
+                ''|\#*) continue ;;
+                *) export "\$key=\$value" ;;
+            esac
+        done < "${config_file}"
     fi
 }
 
@@ -325,6 +313,7 @@ cleanup_pid() {
 
 run_rc_command "\$1"
 EOF
+    
     chmod +x "$rc_file"
     print_info "FreeBSD rc.d 服务文件已创建: $rc_file"
 }
@@ -340,8 +329,16 @@ stop_existing() {
         fi
         rm -f "$WORKDIR/myapp.pid"
     fi
+    
+    # 强制结束所有相关进程
     pkill -f "$WORKDIR/myapp" 2>/dev/null || true
+    pkill -f "sing-box.*$WORKDIR" 2>/dev/null || true
+    pkill -f "xray.*$WORKDIR" 2>/dev/null || true
+    pkill -f "cloudflared.*$WORKDIR" 2>/dev/null || true
+    
+    # 清理临时目录
     if [ -d "$WORKDIR/tmp" ]; then
+        print_info "清理临时文件..."
         rm -rf "$WORKDIR/tmp"/*
     fi
 }
@@ -350,36 +347,55 @@ stop_existing() {
 show_status() {
     local server_port=$1
     local sub_path=$2
-    local tunnel_port=$3
+    local argo_port=$3
     local mode=$4
+    
     echo ""
     print_info "=========================================="
-    print_info "服务已启动 ($mode 模式)"
-    print_info "  订阅地址: http://localhost:$server_port/$sub_path"
-    print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
+    print_info "服务已启动 (纯 Argo 隧道模式 - $mode)"
+    print_info "  本地订阅: http://localhost:$server_port/$sub_path"
+    print_info "  下载订阅: http://localhost:$server_port/$sub_path/download"
     print_info "  状态查看: http://localhost:$server_port/status"
-    if [ "$mode" = "sing-box" ]; then
-        print_info "  VLESS 端口: $tunnel_port (直连和 Argo 隧道目标)"
-    else
-        print_info "  Argo 端口: $tunnel_port"
-    fi
+    print_info "  Argo 本地端口: $argo_port (仅供隧道使用)"
     echo ""
     print_info "管理命令:"
     print_info "  查看日志: tail -f $WORKDIR/myapp.log"
     print_info "  停止服务: kill \$(cat $WORKDIR/myapp.pid)"
-    print_info "  重启服务: $WORKDIR/myapp"
+    print_info "  重启服务: $WORKDIR/restart.sh"
     echo ""
+    
     sleep 3
+    
+    # 检查订阅文件
     if [ -f "$WORKDIR/tmp/sub.txt" ]; then
         print_info "✓ 订阅文件已生成"
+        SUB_CONTENT=$(cat "$WORKDIR/tmp/sub.txt" | head -c 100)
+        echo "  订阅内容预览: ${SUB_CONTENT}..."
     fi
+    
+    # 获取 Argo 隧道地址
     if [ -f "$WORKDIR/tmp/boot.log" ]; then
         ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1)
         if [ -n "$ARGO_URL" ]; then
-            print_info "✓ Argo 隧道地址: $ARGO_URL"
+            print_info "✓ Argo 临时隧道地址: $ARGO_URL"
             print_info "  外网订阅: $ARGO_URL/$sub_path"
+            print_info "  外网状态: $ARGO_URL/status"
         fi
     fi
+    
+    # 检查固定隧道
+    if [ -n "$ARGO_DOMAIN" ]; then
+        print_info "✓ 固定隧道域名: $ARGO_DOMAIN"
+        print_info "  外网订阅: https://$ARGO_DOMAIN/$sub_path"
+    fi
+    
+    echo ""
+    print_info "节点信息:"
+    print_info "  协议: VLESS + WebSocket + TLS"
+    print_info "  地址: 通过 Argo 隧道 (无需暴露服务器 IP)"
+    print_info "  端口: 443 (Cloudflare 标准端口)"
+    print_info "  路径: /vless-argo?ed=2560"
+    echo ""
 }
 
 # 安装主流程
@@ -391,17 +407,18 @@ install() {
     print_info "操作系统: $OS"
     print_info "系统架构: $ARCH"
     echo ""
-
+    
     check_dependencies "$OS"
-
+    
     mkdir -p "$WORKDIR"
     cd "$WORKDIR" || exit 1
-
+    
     BIN_PATH="$WORKDIR/myapp"
     CONFIG_FILE="$WORKDIR/.env"
-
+    RESTART_SCRIPT="$WORKDIR/restart.sh"
+    
     stop_existing
-
+    
     # 选择模式（自动识别）
     MODE=""
     if [ "$OS" = "freebsd" ]; then
@@ -427,18 +444,19 @@ install() {
         print_error "不支持的操作系统: $OS"
         exit 1
     fi
-
+    
     print_info "下载地址: $DOWNLOAD_URL"
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
-
+    
     if [ ! -f "$BIN_PATH" ]; then
         print_error "下载失败，文件不存在: $BIN_PATH"
         exit 1
     fi
-
+    
     chmod +x "$BIN_PATH"
     print_info "已赋予执行权限"
-
+    
+    # 配置环境变量
     if [ -f "$CONFIG_FILE" ]; then
         print_question "检测到已有配置文件，是否重新配置? (y/n, 默认 n): "
         read reconfigure
@@ -446,40 +464,54 @@ install() {
             configure_env "$CONFIG_FILE" "$MODE"
         else
             print_info "使用现有配置文件"
-            set -a
             source "$CONFIG_FILE"
-            set +a
         fi
     else
         configure_env "$CONFIG_FILE" "$MODE"
     fi
-
-    set -a
+    
+    # 加载配置
     source "$CONFIG_FILE"
-    set +a
-
+    
+    # 创建临时目录
     mkdir -p ./tmp
     print_info "已创建 tmp 目录"
-
-    print_info "启动 myapp..."
+    
+    # 创建重启脚本
+    cat > "$RESTART_SCRIPT" << EOF
+#!/bin/bash
+cd $WORKDIR
+kill \$(cat myapp.pid) 2>/dev/null
+sleep 2
+nohup ./myapp > myapp.log 2>&1 &
+echo \$! > myapp.pid
+echo "myapp 已重启"
+EOF
+    chmod +x "$RESTART_SCRIPT"
+    
+    # 启动服务
+    print_info "启动 myapp (纯 Argo 隧道模式)..."
     nohup "$BIN_PATH" > ./myapp.log 2>&1 &
     APP_PID=$!
     echo $APP_PID > ./myapp.pid
-
+    
     print_info "myapp 已启动，PID: $APP_PID"
-    sleep 5
-
+    sleep 8
+    
+    # 检查进程
     if ps -p $APP_PID > /dev/null 2>&1; then
         print_info "✓ myapp 运行正常"
         
-        # 获取隧道端口用于显示
-        if [ "$MODE" = "sing-box" ]; then
-            TUNNEL_PORT="${VLESS_PORT:-8001}"
-        else
-            TUNNEL_PORT="${ARGO_PORT:-8001}"
-        fi
-        show_status "$SERVER_PORT" "$SUB_PATH" "$TUNNEL_PORT" "$MODE"
-
+        # 显示状态
+        show_status "$SERVER_PORT" "$SUB_PATH" "$ARGO_PORT" "$MODE"
+        
+        # 显示日志
+        echo ""
+        print_info "最近日志 (最后 10 行):"
+        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
+        echo ""
+        
+        # 询问是否安装为系统服务
         print_question "是否安装为系统服务? (y/n, 默认 n): "
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
@@ -491,12 +523,14 @@ install() {
                 print_info "启用服务命令: sudo systemctl enable myapp && sudo systemctl start myapp"
             fi
         fi
+        
         print_info "=========================================="
-        echo ""
-        print_info "最近日志 (最后 10 行):"
-        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
+        print_info "安装完成！"
+        print_info "重启命令: $RESTART_SCRIPT"
+        print_info "查看日志: tail -f $WORKDIR/myapp.log"
     else
         print_error "myapp 启动失败，请检查日志"
+        echo ""
         cat ./myapp.log 2>/dev/null
         exit 1
     fi
@@ -508,55 +542,156 @@ uninstall() {
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         stop_existing
         rm -rf "$WORKDIR"
+        
+        # 删除系统服务文件
         if [ "$OS" = "freebsd" ]; then
             rm -f /usr/local/etc/rc.d/myapp 2>/dev/null
         else
             rm -f /etc/systemd/system/myapp.service 2>/dev/null
             systemctl daemon-reload 2>/dev/null
         fi
-        print_info "myapp 已卸载"
+        
+        print_info "myapp 已完全卸载"
     fi
     menu
 }
 
 # 重启
 restart() {
+    if [ ! -d "$WORKDIR" ]; then
+        print_error "myapp 未安装"
+        menu
+        return
+    fi
+    
+    print_info "正在重启 myapp..."
     stop_existing
-    cd "$WORKDIR" || { print_error "工作目录不存在"; menu; }
-    nohup ./myapp > myapp.log 2>&1 &
-    echo $! > myapp.pid
-    print_info "myapp 已重启"
-    sleep 2
-    status
+    cd "$WORKDIR" || exit
+    
+    if [ -f "./myapp" ]; then
+        nohup ./myapp > myapp.log 2>&1 &
+        echo $! > myapp.pid
+        print_info "myapp 已重启，PID: $(cat myapp.pid)"
+        sleep 3
+        status
+    else
+        print_error "找不到可执行文件"
+    fi
 }
 
 # 查看状态
 status() {
-    if [ -f "$WORKDIR/myapp.pid" ]; then
-        PID=$(cat "$WORKDIR/myapp.pid")
+    if [ ! -d "$WORKDIR" ]; then
+        print_error "myapp 未安装"
+        menu
+        return
+    fi
+    
+    cd "$WORKDIR" || exit
+    
+    if [ -f "myapp.pid" ]; then
+        PID=$(cat "myapp.pid")
         if ps -p $PID > /dev/null 2>&1; then
             print_info "myapp 正在运行，PID: $PID"
-            tail -20 "$WORKDIR/myapp.log"
+            echo ""
+            print_info "进程信息:"
+            ps -p $PID -o pid,ppid,cmd,etime
+            echo ""
+            
+            if [ -f ".env" ]; then
+                source .env
+                print_info "服务信息:"
+                print_info "  HTTP 端口: ${SERVER_PORT:-7860}"
+                print_info "  订阅路径: ${SUB_PATH:-sub}"
+                print_info "  Argo 端口: ${ARGO_PORT:-8001}"
+                echo ""
+            fi
+            
+            if [ -f "myapp.log" ]; then
+                print_info "最近日志 (最后 10 行):"
+                tail -10 myapp.log
+            fi
         else
-            print_warn "myapp 未运行"
+            print_warn "myapp 未运行 (PID 文件存在但进程不存在)"
         fi
     else
         print_warn "myapp 未运行"
     fi
+    
     read -p "按回车返回菜单"
     menu
 }
 
-# 重置系统
+# 重置系统 (仅 Serv00/ct8)
 reset_system() {
+    print_warn "此功能仅适用于 Serv00/ct8 等免费主机"
     read -p "危险操作！确认重置系统? [y/N]: " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         stop_existing
-        find "$HOME" -mindepth 1 ! -name "domains" ! -name "mail" ! -name "repo" ! -name "backups" -exec rm -rf {} + 2>/dev/null
-        devil www list | awk 'NF>=2 && $1 ~ /\./ {print $1}' | while read -r domain; do devil www del "$domain"; done
-        rm -rf "$HOME/domains"/* 2>/dev/null
+        
+        # 清理用户目录（保留关键目录）
+        find "$HOME" -mindepth 1 ! -name "domains" ! -name "mail" ! -name "repo" ! -name "backups" -exec rm -rf {} + 2>/dev/null || true
+        
+        # 删除所有网站
+        if command -v devil &> /dev/null; then
+            devil www list | awk 'NF>=2 && $1 ~ /\./ {print $1}' | while read -r domain; do
+                devil www del "$domain" 2>/dev/null || true
+            done
+            rm -rf "$HOME/domains"/* 2>/dev/null || true
+        fi
+        
         print_info "系统已重置（保留 domains, mail, repo, backups 目录）"
+        print_info "建议重新登录 SSH"
     fi
+    menu
+}
+
+# 显示节点信息
+show_nodes() {
+    if [ ! -d "$WORKDIR" ] || [ ! -f "$WORKDIR/tmp/sub.txt" ]; then
+        print_error "未找到节点信息，请先安装"
+        menu
+        return
+    fi
+    
+    cd "$WORKDIR" || exit
+    
+    echo ""
+    print_info "========== 节点信息 =========="
+    echo ""
+    
+    if [ -f "tmp/sub.txt" ]; then
+        # 解码并显示节点
+        if command -v base64 &> /dev/null; then
+            cat tmp/sub.txt | base64 -d 2>/dev/null | while IFS= read -r line; do
+                echo "$line"
+                echo ""
+            done
+        else
+            cat tmp/sub.txt
+        fi
+    fi
+    
+    if [ -f ".env" ]; then
+        source .env
+        echo ""
+        print_info "========== 订阅链接 =========="
+        echo "本地订阅: http://localhost:${SERVER_PORT:-7860}/${SUB_PATH:-sub}"
+        
+        if [ -n "$ARGO_DOMAIN" ]; then
+            echo "外网订阅: https://$ARGO_DOMAIN/${SUB_PATH:-sub}"
+        fi
+        
+        if [ -f "tmp/boot.log" ]; then
+            ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' tmp/boot.log 2>/dev/null | head -1)
+            if [ -n "$ARGO_URL" ]; then
+                echo "临时订阅: $ARGO_URL/${SUB_PATH:-sub}"
+            fi
+        fi
+    fi
+    
+    echo ""
+    read -p "按回车返回菜单"
     menu
 }
 
@@ -564,22 +699,27 @@ reset_system() {
 menu() {
     clear
     echo "=========================================="
-    echo "        myapp 一键部署脚本 v3.1"
+    echo "   myapp 纯 Argo 隧道部署脚本 v4.0"
+    echo "=========================================="
+    echo "  支持协议: VLESS + WebSocket + TLS"
+    echo "  工作模式: 纯 Argo 隧道 (无端口暴露)"
     echo "=========================================="
     echo "1. 安装/更新 myapp"
     echo "2. 卸载 myapp"
     echo "3. 重启 myapp"
     echo "4. 查看状态"
-    echo "5. 重置系统（谨慎）"
+    echo "5. 查看节点信息"
+    echo "6. 重置系统 (Serv00/ct8)"
     echo "0. 退出"
     echo "=========================================="
-    read -p "请选择 [0-5]: " choice
+    read -p "请选择 [0-6]: " choice
     case $choice in
         1) install ;;
         2) uninstall ;;
         3) restart ;;
         4) status ;;
-        5) reset_system ;;
+        5) show_nodes ;;
+        6) reset_system ;;
         0) exit 0 ;;
         *) print_error "无效选择"; sleep 2; menu ;;
     esac
