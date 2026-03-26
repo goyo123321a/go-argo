@@ -1,8 +1,7 @@
 #!/bin/bash
-
 # 一键部署 myapp - 自动下载、配置并运行
-# 支持 Linux 和 FreeBSD
-# 版本: v2.1 (移除 nginx，使用内建反向代理)
+# 支持 Linux (Xray) 和 FreeBSD (Sing-box)
+# 版本: v3.1
 
 set -e
 
@@ -44,16 +43,12 @@ detect_os() {
     esac
 }
 
-# 检查并安装依赖（仅 curl/wget）
+# 检查依赖
 check_dependencies() {
     local os=$1
     if ! command -v curl &> /dev/null && ! command -v wget &> /dev/null; then
         if [ "$os" = "freebsd" ]; then
-            print_info "正在安装 curl..."
-            pkg install -y curl || {
-                print_error "安装 curl 失败"
-                exit 1
-            }
+            pkg install -y curl || { print_error "安装 curl 失败"; exit 1; }
         else
             print_error "请安装 curl 或 wget"
             exit 1
@@ -83,24 +78,36 @@ download_file() {
     fi
 }
 
-# 交互式配置
+# 交互式配置（根据系统使用不同变量名）
 configure_env() {
     local config_file=$1
-    print_info "开始配置环境变量..."
+    local mode=$2
+    print_info "开始配置环境变量（$mode 模式）..."
     echo ""
 
+    # HTTP 服务端口配置
     read -p "请输入 HTTP 服务端口 (留空使用默认 7860): " input_port
     SERVER_PORT="${input_port:-7860}"
     print_info "HTTP 服务端口: $SERVER_PORT"
 
+    # 订阅路径配置
     read -p "请输入订阅路径 (留空使用默认 sub): " input_sub_path
     SUB_PATH="${input_sub_path:-sub}"
     print_info "订阅路径: $SUB_PATH"
 
-    read -p "请输入 Argo 隧道端口 (留空使用默认 8001): " input_argo_port
-    ARGO_PORT="${input_argo_port:-8001}"
-    print_info "Argo 隧道端口: $ARGO_PORT"
+    # 隧道端口配置（根据系统使用不同变量名）
+    if [ "$mode" = "sing-box" ]; then
+        read -p "请输入 VLESS 端口 (留空使用默认 8001): " input_vless_port
+        VLESS_PORT="${input_vless_port:-8001}"
+        print_info "VLESS 端口: $VLESS_PORT"
+        ARGO_PORT="$VLESS_PORT"  # 兼容内部使用
+    else
+        read -p "请输入 Argo 隧道端口 (留空使用默认 8001): " input_argo_port
+        ARGO_PORT="${input_argo_port:-8001}"
+        print_info "Argo 隧道端口: $ARGO_PORT"
+    fi
 
+    # UUID 配置
     echo ""
     read -p "请输入 UUID (留空使用默认值): " input_uuid
     if [ -z "$input_uuid" ]; then
@@ -110,6 +117,7 @@ configure_env() {
         UUID="$input_uuid"
     fi
 
+    # CFIP 和 CFPORT 配置
     echo ""
     read -p "请输入优选域名/IP (留空使用默认 cf.877774.xyz): " input_cfip
     if [ -z "$input_cfip" ]; then
@@ -121,10 +129,12 @@ configure_env() {
     read -p "请输入端口 (留空使用默认 443): " input_cfport
     CFPORT="${input_cfport:-443}"
 
+    # 节点名称
     echo ""
     read -p "请输入节点名称 (留空使用自动获取): " input_name
     NAME="$input_name"
 
+    # Argo Tunnel 配置
     echo ""
     print_question "是否使用固定隧道? (y/n, 默认 n): "
     read use_fixed_tunnel
@@ -137,6 +147,7 @@ configure_env() {
         fi
     fi
 
+    # 哪吒监控配置
     echo ""
     print_question "是否使用哪吒监控? (y/n, 默认 n): "
     read use_nezha
@@ -158,6 +169,7 @@ configure_env() {
         fi
     fi
 
+    # 自动上传配置
     echo ""
     print_question "是否自动上传订阅? (y/n, 默认 n): "
     read use_upload
@@ -170,6 +182,7 @@ configure_env() {
         fi
     fi
 
+    # 自动保活配置
     echo ""
     print_question "是否开启自动保活? (y/n, 默认 n): "
     read use_auto_access
@@ -179,6 +192,7 @@ configure_env() {
         AUTO_ACCESS="false"
     fi
 
+    # 写入配置文件
     cat > "$config_file" << EOF
 # myapp 配置文件
 UUID=$UUID
@@ -187,10 +201,21 @@ CFPORT=$CFPORT
 NAME=$NAME
 SERVER_PORT=$SERVER_PORT
 SUB_PATH=$SUB_PATH
-ARGO_PORT=$ARGO_PORT
 FILE_PATH=./tmp
 AUTO_ACCESS=$AUTO_ACCESS
 EOF
+
+    # 根据模式写入不同端口变量
+    if [ "$mode" = "sing-box" ]; then
+        cat >> "$config_file" << EOF
+VLESS_PORT=$VLESS_PORT
+ARGO_PORT=$ARGO_PORT
+EOF
+    else
+        cat >> "$config_file" << EOF
+ARGO_PORT=$ARGO_PORT
+EOF
+    fi
 
     if [[ "$use_fixed_tunnel" =~ ^[Yy]$ ]]; then
         cat >> "$config_file" << EOF
@@ -221,10 +246,8 @@ EOF
 create_systemd_service() {
     local bin_path=$1
     local config_file=$2
-    local service_name=$3
-    local service_file="/etc/systemd/system/${service_name}.service"
+    local service_file="/etc/systemd/system/myapp.service"
     local current_user=$(whoami)
-
     cat > "$service_file" << EOF
 [Unit]
 Description=myapp Service
@@ -249,31 +272,29 @@ EOF
 create_rc_service() {
     local bin_path=$1
     local config_file=$2
-    local service_name=$3
-    local rc_file="/usr/local/etc/rc.d/${service_name}"
+    local rc_file="/usr/local/etc/rc.d/myapp"
     local current_user=$(whoami)
-    
     cat > "$rc_file" << EOF
 #!/bin/sh
 #
-# PROVIDE: $service_name
+# PROVIDE: myapp
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown
 
 . /etc/rc.subr
 
-name="$service_name"
-rcvar="${service_name}_enable"
+name="myapp"
+rcvar="myapp_enable"
 
-load_rc_config "\$name"
+load_rc_config \$name
 
-: \${${service_name}_enable:=NO}
-: \${${service_name}_user:=$current_user}
-: \${${service_name}_dir:=$WORKDIR}
+: \${myapp_enable:=NO}
+: \${myapp_user:=$current_user}
+: \${myapp_dir:=$WORKDIR}
 
-pidfile="/var/run/\${name}.pid"
+pidfile="/var/run/myapp.pid"
 command="/usr/sbin/daemon"
-command_args="-p \${pidfile} -u \${${service_name}_user} -f ${bin_path}"
+command_args="-p \${pidfile} -u \${myapp_user} -f ${bin_path}"
 
 start_precmd="export_env"
 stop_postcmd="cleanup_pid"
@@ -281,7 +302,13 @@ stop_postcmd="cleanup_pid"
 export_env() {
     if [ -f "${config_file}" ]; then
         . "${config_file}"
-        export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH ARGO_PORT FILE_PATH AUTO_ACCESS
+        export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH FILE_PATH AUTO_ACCESS
+        # 根据系统导出不同端口变量
+        if [ -n "\$VLESS_PORT" ]; then
+            export VLESS_PORT ARGO_PORT
+        else
+            export ARGO_PORT
+        fi
         [ -n "\$ARGO_DOMAIN" ] && export ARGO_DOMAIN
         [ -n "\$ARGO_AUTH" ] && export ARGO_AUTH
         [ -n "\$NEZHA_SERVER" ] && export NEZHA_SERVER
@@ -298,26 +325,8 @@ cleanup_pid() {
 
 run_rc_command "\$1"
 EOF
-    
     chmod +x "$rc_file"
     print_info "FreeBSD rc.d 服务文件已创建: $rc_file"
-    print_info "启用服务命令:"
-    echo "  sudo sysrc ${service_name}_enable=YES"
-    echo "  sudo service ${service_name} start"
-}
-
-# 创建服务 (根据系统选择)
-create_service() {
-    local bin_path=$1
-    local config_file=$2
-    local service_name=$3
-    local os=$4
-    
-    if [ "$os" = "freebsd" ]; then
-        create_rc_service "$bin_path" "$config_file" "$service_name"
-    else
-        create_systemd_service "$bin_path" "$config_file" "$service_name"
-    fi
 }
 
 # 停止现有服务
@@ -333,43 +342,37 @@ stop_existing() {
     fi
     pkill -f "$WORKDIR/myapp" 2>/dev/null || true
     if [ -d "$WORKDIR/tmp" ]; then
-        print_info "清理 tmp 目录..."
         rm -rf "$WORKDIR/tmp"/*
     fi
 }
 
-# 显示服务状态
+# 显示状态
 show_status() {
     local server_port=$1
     local sub_path=$2
-    local argo_port=$3
-    
+    local tunnel_port=$3
+    local mode=$4
     echo ""
     print_info "=========================================="
-    print_info "服务已启动"
+    print_info "服务已启动 ($mode 模式)"
     print_info "  订阅地址: http://localhost:$server_port/$sub_path"
     print_info "  下载地址: http://localhost:$server_port/$sub_path/download"
     print_info "  状态查看: http://localhost:$server_port/status"
-    if [ "$OS" = "freebsd" ]; then
-        print_info "  反向代理端口: $argo_port (Argo 隧道目标)"
+    if [ "$mode" = "sing-box" ]; then
+        print_info "  VLESS 端口: $tunnel_port (直连和 Argo 隧道目标)"
+    else
+        print_info "  Argo 端口: $tunnel_port"
     fi
     echo ""
     print_info "管理命令:"
     print_info "  查看日志: tail -f $WORKDIR/myapp.log"
-    print_info "  查看 tmp: ls -la $WORKDIR/tmp"
-    print_info "  查看配置: cat $WORKDIR/.env"
     print_info "  停止服务: kill \$(cat $WORKDIR/myapp.pid)"
     print_info "  重启服务: $WORKDIR/myapp"
     echo ""
-    
     sleep 3
     if [ -f "$WORKDIR/tmp/sub.txt" ]; then
         print_info "✓ 订阅文件已生成"
-        print_info "  订阅内容预览:"
-        head -c 200 "$WORKDIR/tmp/sub.txt" 2>/dev/null || true
-        echo "..."
     fi
-    
     if [ -f "$WORKDIR/tmp/boot.log" ]; then
         ARGO_URL=$(grep -oE 'https?://[^ ]*trycloudflare\.com' "$WORKDIR/tmp/boot.log" 2>/dev/null | head -1)
         if [ -n "$ARGO_URL" ]; then
@@ -379,42 +382,39 @@ show_status() {
     fi
 }
 
-# 主函数
-main() {
-    echo "=========================================="
-    echo "        myapp 一键部署脚本 v2.1"
-    echo "=========================================="
+# 安装主流程
+install() {
     echo ""
-
     print_info "检测系统环境..."
     OS=$(detect_os)
     ARCH=$(detect_arch)
     print_info "操作系统: $OS"
     print_info "系统架构: $ARCH"
     echo ""
-    
+
     check_dependencies "$OS"
 
     mkdir -p "$WORKDIR"
     cd "$WORKDIR" || exit 1
-    print_info "工作目录: $(pwd)"
-    
+
     BIN_PATH="$WORKDIR/myapp"
     CONFIG_FILE="$WORKDIR/.env"
-    
-    print_info "二进制文件路径: $BIN_PATH"
-    print_info "配置文件路径: $CONFIG_FILE"
 
     stop_existing
 
+    # 选择模式（自动识别）
+    MODE=""
     if [ "$OS" = "freebsd" ]; then
-        if [ "$ARCH" = "amd64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-amd64"
-        else
-            print_error "FreeBSD 系统暂不支持 arm64 架构"
+        MODE="sing-box"
+        print_info "检测到 FreeBSD，将使用 Sing-box 模式"
+        if [ "$ARCH" != "amd64" ]; then
+            print_error "FreeBSD 仅支持 amd64 架构"
             exit 1
         fi
+        DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-amd64"
     elif [ "$OS" = "linux" ]; then
+        MODE="xray"
+        print_info "检测到 Linux，将使用 Xray 模式"
         if [ "$ARCH" = "amd64" ]; then
             DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-amd64"
         elif [ "$ARCH" = "arm64" ]; then
@@ -427,7 +427,7 @@ main() {
         print_error "不支持的操作系统: $OS"
         exit 1
     fi
-    
+
     print_info "下载地址: $DOWNLOAD_URL"
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
 
@@ -438,16 +438,12 @@ main() {
 
     chmod +x "$BIN_PATH"
     print_info "已赋予执行权限"
-    
-    print_info "文件信息:"
-    ls -la "$BIN_PATH"
-    file "$BIN_PATH" 2>/dev/null || true
 
     if [ -f "$CONFIG_FILE" ]; then
         print_question "检测到已有配置文件，是否重新配置? (y/n, 默认 n): "
         read reconfigure
         if [[ "$reconfigure" =~ ^[Yy]$ ]]; then
-            configure_env "$CONFIG_FILE"
+            configure_env "$CONFIG_FILE" "$MODE"
         else
             print_info "使用现有配置文件"
             set -a
@@ -455,7 +451,7 @@ main() {
             set +a
         fi
     else
-        configure_env "$CONFIG_FILE"
+        configure_env "$CONFIG_FILE" "$MODE"
     fi
 
     set -a
@@ -467,55 +463,127 @@ main() {
 
     print_info "启动 myapp..."
     nohup "$BIN_PATH" > ./myapp.log 2>&1 &
-    
     APP_PID=$!
     echo $APP_PID > ./myapp.pid
 
     print_info "myapp 已启动，PID: $APP_PID"
-    print_info "日志文件: $(pwd)/myapp.log"
-    print_info "配置文件: $CONFIG_FILE"
-    print_info "临时目录: $(pwd)/tmp"
-
     sleep 5
 
     if ps -p $APP_PID > /dev/null 2>&1; then
         print_info "✓ myapp 运行正常"
         
-        show_status "$SERVER_PORT" "$SUB_PATH" "$ARGO_PORT"
-        
+        # 获取隧道端口用于显示
+        if [ "$MODE" = "sing-box" ]; then
+            TUNNEL_PORT="${VLESS_PORT:-8001}"
+        else
+            TUNNEL_PORT="${ARGO_PORT:-8001}"
+        fi
+        show_status "$SERVER_PORT" "$SUB_PATH" "$TUNNEL_PORT" "$MODE"
+
         print_question "是否安装为系统服务? (y/n, 默认 n): "
         read install_service
         if [[ "$install_service" =~ ^[Yy]$ ]]; then
-            SERVICE_NAME="myapp"
-            create_service "$BIN_PATH" "$CONFIG_FILE" "$SERVICE_NAME" "$OS"
-            print_info "系统服务已安装，可使用以下命令管理:"
             if [ "$OS" = "freebsd" ]; then
-                echo "  sudo service myapp start"
-                echo "  sudo service myapp stop"
-                echo "  sudo service myapp status"
-                echo "  sudo sysrc myapp_enable=YES  # 开机自启"
+                create_rc_service "$BIN_PATH" "$CONFIG_FILE"
+                print_info "启用服务命令: sudo sysrc myapp_enable=YES && sudo service myapp start"
             else
-                echo "  sudo systemctl start myapp"
-                echo "  sudo systemctl stop myapp"
-                echo "  sudo systemctl status myapp"
-                echo "  sudo systemctl enable myapp  # 开机自启"
+                create_systemd_service "$BIN_PATH" "$CONFIG_FILE"
+                print_info "启用服务命令: sudo systemctl enable myapp && sudo systemctl start myapp"
             fi
         fi
-        
         print_info "=========================================="
         echo ""
-        print_info "最近日志 (最后 15 行):"
-        tail -15 ./myapp.log 2>/dev/null || echo "无日志"
-        
+        print_info "最近日志 (最后 10 行):"
+        tail -10 ./myapp.log 2>/dev/null || echo "无日志"
     else
         print_error "myapp 启动失败，请检查日志"
-        echo "=== 日志内容 ==="
-        cat ./myapp.log 2>/dev/null || echo "无日志文件"
-        echo "=== 二进制文件信息 ==="
-        file "$BIN_PATH" 2>/dev/null || echo "无法获取文件信息"
+        cat ./myapp.log 2>/dev/null
         exit 1
     fi
 }
 
-trap 'print_info "脚本被中断"; exit 1' INT TERM
-main "$@"
+# 卸载
+uninstall() {
+    read -p "确定要卸载吗? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        stop_existing
+        rm -rf "$WORKDIR"
+        if [ "$OS" = "freebsd" ]; then
+            rm -f /usr/local/etc/rc.d/myapp 2>/dev/null
+        else
+            rm -f /etc/systemd/system/myapp.service 2>/dev/null
+            systemctl daemon-reload 2>/dev/null
+        fi
+        print_info "myapp 已卸载"
+    fi
+    menu
+}
+
+# 重启
+restart() {
+    stop_existing
+    cd "$WORKDIR" || { print_error "工作目录不存在"; menu; }
+    nohup ./myapp > myapp.log 2>&1 &
+    echo $! > myapp.pid
+    print_info "myapp 已重启"
+    sleep 2
+    status
+}
+
+# 查看状态
+status() {
+    if [ -f "$WORKDIR/myapp.pid" ]; then
+        PID=$(cat "$WORKDIR/myapp.pid")
+        if ps -p $PID > /dev/null 2>&1; then
+            print_info "myapp 正在运行，PID: $PID"
+            tail -20 "$WORKDIR/myapp.log"
+        else
+            print_warn "myapp 未运行"
+        fi
+    else
+        print_warn "myapp 未运行"
+    fi
+    read -p "按回车返回菜单"
+    menu
+}
+
+# 重置系统
+reset_system() {
+    read -p "危险操作！确认重置系统? [y/N]: " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        stop_existing
+        find "$HOME" -mindepth 1 ! -name "domains" ! -name "mail" ! -name "repo" ! -name "backups" -exec rm -rf {} + 2>/dev/null
+        devil www list | awk 'NF>=2 && $1 ~ /\./ {print $1}' | while read -r domain; do devil www del "$domain"; done
+        rm -rf "$HOME/domains"/* 2>/dev/null
+        print_info "系统已重置（保留 domains, mail, repo, backups 目录）"
+    fi
+    menu
+}
+
+# 主菜单
+menu() {
+    clear
+    echo "=========================================="
+    echo "        myapp 一键部署脚本 v3.1"
+    echo "=========================================="
+    echo "1. 安装/更新 myapp"
+    echo "2. 卸载 myapp"
+    echo "3. 重启 myapp"
+    echo "4. 查看状态"
+    echo "5. 重置系统（谨慎）"
+    echo "0. 退出"
+    echo "=========================================="
+    read -p "请选择 [0-5]: " choice
+    case $choice in
+        1) install ;;
+        2) uninstall ;;
+        3) restart ;;
+        4) status ;;
+        5) reset_system ;;
+        0) exit 0 ;;
+        *) print_error "无效选择"; sleep 2; menu ;;
+    esac
+}
+
+# 启动菜单
+menu
