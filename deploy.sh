@@ -1,7 +1,7 @@
 #!/bin/bash
 # 一键部署 myapp - 纯 Argo 隧道模式
 # 支持 Linux (Xray) 和 FreeBSD (Sing-box)
-# 版本: v4.3 - 简化显示，只显示可用订阅
+# 版本: v5.0
 
 set -e
 
@@ -20,25 +20,6 @@ print_question() { echo -e "${BLUE}[?]${NC} $1"; }
 # 固定工作目录
 WORKDIR="$HOME/myapp"
 VERSION="v1.0.0.12"
-
-# 获取本机 IP
-get_local_ip() {
-    # 获取主要网卡的 IP 地址
-    local ip=""
-    
-    # Linux
-    if command -v ip &> /dev/null; then
-        ip=$(ip route get 1 2>/dev/null | awk '{print $NF;exit}' 2>/dev/null)
-    fi
-    
-    # FreeBSD
-    if [ -z "$ip" ] && command -v ifconfig &> /dev/null; then
-        ip=$(ifconfig | grep -E 'inet (10\.|172\.1[6-9]|172\.2[0-9]|172\.3[0-1]|192\.168\.)' | awk '{print $2}' | head -1)
-    fi
-    
-    # 如果获取失败，使用 localhost
-    echo "${ip:-127.0.0.1}"
-}
 
 # 检测系统架构
 detect_arch() {
@@ -71,19 +52,6 @@ check_dependencies() {
         else
             print_error "请安装 curl 或 wget"
             exit 1
-        fi
-    fi
-    
-    if ! command -v openssl &> /dev/null; then
-        print_warn "未找到 openssl，将尝试安装..."
-        if [ "$os" = "freebsd" ]; then
-            pkg install -y openssl || print_warn "openssl 安装失败"
-        elif [ "$os" = "linux" ]; then
-            if command -v apt-get &> /dev/null; then
-                apt-get update && apt-get install -y openssl || print_warn "openssl 安装失败"
-            elif command -v yum &> /dev/null; then
-                yum install -y openssl || print_warn "openssl 安装失败"
-            fi
         fi
     fi
 }
@@ -126,10 +94,10 @@ configure_env() {
     local config_file=$1
     local mode=$2
     
-    print_info "开始配置环境变量..."
+    print_info "开始配置环境变量（纯 Argo 隧道模式）..."
     echo ""
     
-    # 基础配置
+    # UUID
     read -p "请输入 UUID (留空将自动生成): " input_uuid
     if [ -z "$input_uuid" ]; then
         UUID=$(generate_uuid)
@@ -160,7 +128,7 @@ configure_env() {
     
     # 节点名称
     echo ""
-    read -p "请输入节点名称 (留空使用自动获取): " input_name
+    read -p "请输入节点名称前缀 (留空使用自动获取): " input_name
     NAME="$input_name"
     
     # Argo Tunnel 配置
@@ -181,7 +149,7 @@ configure_env() {
     print_question "是否使用哪吒监控? (y/n, 默认 n): "
     read use_nezha
     if [[ "$use_nezha" =~ ^[Yy]$ ]]; then
-        read -p "请输入哪吒服务器地址: " NEZHA_SERVER
+        read -p "请输入哪吒服务器地址 (格式: nz.abc.com:8008): " NEZHA_SERVER
         read -p "请输入哪吒密钥: " NEZHA_KEY
         if [ -n "$NEZHA_SERVER" ] && [ -n "$NEZHA_KEY" ]; then
             if [[ "$NEZHA_SERVER" == *":"* ]]; then
@@ -209,9 +177,19 @@ configure_env() {
         fi
     fi
     
+    # 自动保活配置
+    echo ""
+    print_question "是否开启自动保活? (y/n, 默认 n): "
+    read use_auto_access
+    if [[ "$use_auto_access" =~ ^[Yy]$ ]] && [ -n "$PROJECT_URL" ]; then
+        AUTO_ACCESS="true"
+    else
+        AUTO_ACCESS="false"
+    fi
+    
     # 写入配置文件
     cat > "$config_file" << EOF
-# myapp 配置文件
+# myapp 配置文件 - 纯 Argo 隧道模式
 UUID=$UUID
 CFIP=$CFIP
 CFPORT=$CFPORT
@@ -220,7 +198,7 @@ SERVER_PORT=$SERVER_PORT
 SUB_PATH=$SUB_PATH
 ARGO_PORT=$ARGO_PORT
 FILE_PATH=./tmp
-AUTO_ACCESS=false
+AUTO_ACCESS=$AUTO_ACCESS
 EOF
     
     if [[ "$use_fixed_tunnel" =~ ^[Yy]$ ]]; then
@@ -248,7 +226,7 @@ EOF
     print_info "配置完成"
 }
 
-# 创建 systemd 服务
+# 创建 systemd 服务 (Linux)
 create_systemd_service() {
     local bin_path=$1
     local config_file=$2
@@ -333,6 +311,7 @@ stop_existing() {
     if [ -f "$WORKDIR/myapp.pid" ]; then
         OLD_PID=$(cat "$WORKDIR/myapp.pid")
         if ps -p $OLD_PID > /dev/null 2>&1; then
+            print_info "停止现有进程: $OLD_PID"
             kill $OLD_PID 2>/dev/null || true
             sleep 2
         fi
@@ -365,7 +344,7 @@ start_myapp() {
     
     SERVER_PORT=${SERVER_PORT:-7860}
     SUB_PATH=${SUB_PATH:-sub}
-    ARGO_PORT=${ARGO_PORT:-8001}
+    ARGO_PORT=${ARGO_PORT:-3001}
     CFIP=${CFIP:-cf.877774.xyz}
     CFPORT=${CFPORT:-443}
     
@@ -380,7 +359,7 @@ start_myapp() {
     env_vars="$env_vars SUB_PATH=$SUB_PATH"
     env_vars="$env_vars ARGO_PORT=$ARGO_PORT"
     env_vars="$env_vars FILE_PATH=./tmp"
-    env_vars="$env_vars AUTO_ACCESS=false"
+    env_vars="$env_vars AUTO_ACCESS=$AUTO_ACCESS"
     
     [ -n "$ARGO_DOMAIN" ] && env_vars="$env_vars ARGO_DOMAIN=$ARGO_DOMAIN"
     [ -n "$ARGO_AUTH" ] && env_vars="$env_vars ARGO_AUTH=$ARGO_AUTH"
@@ -408,15 +387,25 @@ start_myapp() {
 show_subscription() {
     local server_port=$1
     local sub_path=$2
-    local local_ip=$(get_local_ip)
     
-    echo ""
-    print_info "=========================================="
-    print_info "订阅链接"
-    print_info "=========================================="
-    echo ""
-    echo "本地订阅: http://$local_ip:$server_port/$sub_path"
-    echo "本地下载: http://$local_ip:$server_port/$sub_path/download"
+    # 尝试从日志中提取 IP
+    if [ -f "$WORKDIR/myapp.log" ]; then
+        # 从日志中提取服务器 IP
+        local ips=$(grep -oE '服务器 IP 地址: [0-9.]+(,[0-9.]+)*' "$WORKDIR/myapp.log" | head -1 | sed 's/服务器 IP 地址: //')
+        if [ -n "$ips" ]; then
+            print_info "服务器 IP 地址: $ips"
+            IFS=',' read -ra IP_LIST <<< "$ips"
+            for ip in "${IP_LIST[@]}"; do
+                echo "  本地订阅: http://${ip}:$server_port/$sub_path"
+            done
+        else
+            echo "  本地订阅: http://127.0.0.1:$server_port/$sub_path"
+        fi
+    else
+        echo "  本地订阅: http://127.0.0.1:$server_port/$sub_path"
+    fi
+    echo "  下载订阅: http://127.0.0.1:$server_port/$sub_path/download"
+    echo "  状态查看: http://127.0.0.1:$server_port/status"
     echo ""
     
     # 如果配置了汇聚订阅
@@ -427,12 +416,6 @@ show_subscription() {
             echo ""
         fi
     fi
-    
-    # 如果有公网 IP，也显示一下
-    if [ "$local_ip" != "127.0.0.1" ]; then
-        print_info "提示: 如需外网访问，请确保防火墙允许 $server_port 端口"
-    fi
-    echo ""
 }
 
 # 安装主流程
@@ -455,20 +438,16 @@ install() {
     
     stop_existing
     
-    # 选择下载地址
+    # 下载二进制文件
     if [ "$OS" = "freebsd" ]; then
         MODE="sing-box"
-        DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-amd64"
+        DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-freebsd-${ARCH}"
     elif [ "$OS" = "linux" ]; then
         MODE="xray"
-        if [ "$ARCH" = "amd64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-amd64"
-        elif [ "$ARCH" = "arm64" ]; then
-            DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-arm64"
-        else
-            print_error "不支持的架构: $ARCH"
-            exit 1
-        fi
+        DOWNLOAD_URL="https://github.com/goyo123321a/go-argo/releases/download/${VERSION}/myapp-linux-${ARCH}"
+    else
+        print_error "不支持的操作系统: $OS"
+        exit 1
     fi
     
     download_file "$DOWNLOAD_URL" "$BIN_PATH"
@@ -496,7 +475,7 @@ export UUID CFIP CFPORT NAME SERVER_PORT SUB_PATH ARGO_PORT
 [ -n "$ARGO_AUTH" ] && export ARGO_AUTH
 nohup ./myapp > myapp.log 2>&1 &
 echo $! > myapp.pid
-echo "myapp 已重启"
+echo "myapp 已重启，PID: $(cat myapp.pid)"
 EOF
     chmod +x "$RESTART_SCRIPT"
     
@@ -647,7 +626,10 @@ reset_system() {
 menu() {
     clear
     echo "=========================================="
-    echo "   myapp 一键部署 v4.3"
+    echo "   myapp 一键部署 v5.0"
+    echo "=========================================="
+    echo "  模式: 纯 Argo 隧道 (无 TLS 证书)"
+    echo "  支持: Linux / FreeBSD"
     echo "=========================================="
     echo "1. 安装/更新"
     echo "2. 卸载"
@@ -670,4 +652,5 @@ menu() {
     esac
 }
 
+# 启动菜单
 menu
