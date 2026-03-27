@@ -386,7 +386,6 @@ func getAvailableIP() string {
 // ==================== 生成 Sing-box 配置（FreeBSD 仅 vmess-ws） ====================
 
 func generateSingBoxConfig(tcpPort int) error {
-	serverIP := getAvailableIP()
 	config := SingBoxConfig{
 		Log: SingBoxLog{Level: "error"},
 		DNS: SingBoxDNS{
