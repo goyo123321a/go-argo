@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -932,8 +933,8 @@ func generateLinks(argoDomain string) error {
 		nodeName = name + "-" + isp
 	}
 	if runtime.GOOS == "freebsd" {
-		// FreeBSD 只生成 Argo 节点（通过 Cloudflare 隧道访问）
-		argoLink := fmt.Sprintf(`vless://%s@%s:%d?encryption=none&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560&security=tls&sni=%s&flow=xtls-rprx-vision#%s`,
+		// FreeBSD 只生成 Argo 节点（通过 Cloudflare 隧道访问)
+		argoLink := fmt.Sprintf(`vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=%%2Fvless-argo%%3Fed%%3D2560#%s`,
 			uuid, argoDomain, cfport, argoDomain, argoDomain, nodeName)
 
 		encoded := base64.StdEncoding.EncodeToString([]byte(argoLink))
@@ -947,6 +948,8 @@ func generateLinks(argoDomain string) error {
 		subReady = true
 		subReadyMu.Unlock()
 		log.Printf("✓ 订阅已生成 (FreeBSD vless-argo 节点)")
+		log.Printf("  节点格式: vless://%s@%s:%d?encryption=none&security=tls&sni=%s&fp=firefox&type=ws&host=%s&path=/vless-argo?ed=2560#%s",
+			uuid, argoDomain, cfport, argoDomain, argoDomain, nodeName)
 		log.Printf("✓ 隧道域名: %s", argoDomain)
 		log.Printf("✓ 节点名称: %s", nodeName)
 		uploadNodes()
@@ -954,6 +957,7 @@ func generateLinks(argoDomain string) error {
 	}
 
 	// Linux 生成三个节点（vless, vmess, trojan）
+	// 保持原有逻辑
 	vmess := map[string]interface{}{
 		"v":    "2",
 		"ps":   nodeName,
