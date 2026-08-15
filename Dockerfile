@@ -11,7 +11,7 @@ RUN apk add --no-cache openssl curl bash wget gcompat iproute2 coreutils
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001 -G nodejs
 WORKDIR /tmp
 COPY --from=builder /app/app /usr/local/bin/app
-COPY index.html /tmp/   # 若有，否则可删
+COPY index.html /tmp/
 RUN chmod +x /usr/local/bin/app
 USER nodejs
 EXPOSE 7860
