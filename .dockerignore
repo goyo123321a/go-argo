@@ -1,29 +1,8 @@
-# Git
-.git/
-.gitignore
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# 临时文件
-.tmp/
-*.log
-boot.log
-config.json
-sub.txt
-list.txt
-*.yaml
-
-# 编译产物
-myapp
-*.exe
-
-# 依赖
-vendor/
-
-# 文档
+.git
+.github
 README.md
-LICENSE
+.gitignore
+*.md
+.vscode
+.idea
+*.log
