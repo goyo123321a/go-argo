@@ -25,15 +25,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # 如果 go.mod 不存在，则自动生成
-      - name: Generate go.mod if missing
+      # 确保 index.html 存在（如缺失则创建占位）
+      - name: Ensure index.html exists
         run: |
-          if [ ! -f go.mod ]; then
-            echo "go.mod not found, generating..."
-            go mod init go-argo
-            go get golang.org/x/crypto@v0.31.0
-          else
-            echo "go.mod exists, skipping generation."
+          if [ ! -f index.html ]; then
+            echo "Creating placeholder index.html"
+            echo '<html><body><h1>Hello</h1></body></html>' > index.html
           fi
 
       - name: Log in to GitHub Container Registry
