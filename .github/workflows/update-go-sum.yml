@@ -1,26 +1,23 @@
-name: Update go.sum
+name: Generate and Commit go.sum
 
 on:
+  workflow_dispatch:    # 手动触发
   push:
-    paths:
-      - 'go.mod'          # 当 go.mod 变更时自动触发
-  workflow_dispatch:      # 也允许手动触发
-
-permissions:
-  contents: write         # 需要写入权限以推送提交
+    branches: [ main ]  # 也可以在 push 时自动检测，但需防止循环
 
 jobs:
-  update:
+  generate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 允许推送代码
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0   # 获取完整历史，便于提交
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -28,22 +25,17 @@ jobs:
       - name: Generate go.sum
         run: |
           go mod tidy
-          # 如果 go.sum 已有变更，git status 会显示
-
-      - name: Check for changes
-        id: changes
-        run: |
-          if git diff --quiet go.sum; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
+          # 如果有 go.mod 变动也会更新
 
       - name: Commit and push if changed
-        if: steps.changes.outputs.changed == 'true'
         run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add go.sum
-          git commit -m "ci: update go.sum [skip ci]"
-          git push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add go.mod go.sum
+          # 检查是否有变更
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: auto-generate go.sum"
+            git push
+          fi
