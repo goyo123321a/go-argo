@@ -1,28 +1,18 @@
-name: Build and Push Docker Image
+name: Build and Push Docker Image (Go)
 
 on:
   workflow_dispatch:
     inputs:
       image_name:
-        description: 'Docker镜像名称'
+        description: 'Docker镜像名称 (默认: go-argo)'
         required: false
-        default: 'myapp'
+        default: 'go-argo'
         type: string
       image_tag:
-        description: 'Docker镜像标签'
+        description: 'Docker镜像标签 (默认: latest)'
         required: false
         default: 'latest'
         type: string
-      platform_amd64:
-        description: '构建 amd64 架构'
-        required: false
-        default: true
-        type: boolean
-      platform_arm64:
-        description: '构建 arm64 架构'
-        required: false
-        default: true
-        type: boolean
 
 jobs:
   build:
@@ -33,60 +23,30 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: actions/checkout@v5
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare platforms
-        id: platforms
-        run: |
-          PLATFORMS=""
-          if [ "${{ inputs.platform_amd64 }}" = "true" ]; then
-            PLATFORMS="linux/amd64"
-          fi
-          if [ "${{ inputs.platform_arm64 }}" = "true" ]; then
-            if [ -n "$PLATFORMS" ]; then
-              PLATFORMS="$PLATFORMS,linux/arm64"
-            else
-              PLATFORMS="linux/arm64"
-            fi
-          fi
-          echo "platforms=$PLATFORMS" >> $GITHUB_OUTPUT
-          echo "Building for platforms: $PLATFORMS"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
-          platforms: ${{ steps.platforms.outputs.platforms }}
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}
             ghcr.io/${{ github.repository_owner }}/${{ inputs.image_name }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=MyApp Proxy Service
+            org.opencontainers.image.description=Go HTTP Server with Node-like functionality
             org.opencontainers.image.licenses=MIT
-            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Image information
-        run: |
-          echo "✅ Docker image built and pushed successfully!"
-          echo "📦 Image: ghcr.io/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          echo "🏷️  Tags:"
-          echo "   - ghcr.io/${{ github.repository_owner }}/${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          echo "   - ghcr.io/${{ github.repository_owner }}/${{ inputs.image_name }}:latest"
-          echo "🖥️  Platforms: ${{ steps.platforms.outputs.platforms }}"
