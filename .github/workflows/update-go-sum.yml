@@ -1,0 +1,49 @@
+name: Update go.sum
+
+on:
+  push:
+    paths:
+      - 'go.mod'          # 当 go.mod 变更时自动触发
+  workflow_dispatch:      # 也允许手动触发
+
+permissions:
+  contents: write         # 需要写入权限以推送提交
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Generate go.sum
+        run: |
+          go mod tidy
+          # 如果 go.sum 已有变更，git status 会显示
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet go.sum; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push if changed
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
+          git add go.sum
+          git commit -m "ci: update go.sum [skip ci]"
+          git push
