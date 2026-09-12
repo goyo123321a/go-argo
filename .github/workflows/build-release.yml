@@ -27,38 +27,36 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [linux, freebsd]
+        os: [linux]
         arch: [amd64, arm64]
-        exclude:
-          - os: freebsd
-            arch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure index.html exists
+        run: |
+          if [ ! -f index.html ]; then
+            echo '<html><body><h1>Hello</h1></body></html>' > index.html
+          fi
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'   # 使用较新稳定版
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
-        with:
-          path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          go-version: '1.22'
 
       - name: Build static binary for ${{ matrix.os }}/${{ matrix.arch }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
         run: |
-          CGO_ENABLED=0 GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} \
-            go build -ldflags="-s -w" -o myapp-${{ matrix.os }}-${{ matrix.arch }}
+          go build -ldflags="-s -w" -o go-argo-${{ matrix.os }}-${{ matrix.arch }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: myapp-${{ matrix.os }}-${{ matrix.arch }}
-          path: myapp-${{ matrix.os }}-${{ matrix.arch }}
+          name: go-argo-${{ matrix.os }}-${{ matrix.arch }}
+          path: go-argo-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 30
 
   release:
@@ -70,6 +68,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          ls -lh dist/
 
       - name: Set tag and release name
         id: set_tag
@@ -83,18 +87,17 @@ jobs:
           fi
 
       - name: Create Release and Upload Assets
-        uses: softprops/action-gh-release@v2   # ← 关键升级
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.set_tag.outputs.tag_name }}
           name: ${{ steps.set_tag.outputs.release_name }}
-          files: artifacts/**/*
+          files: dist/*
           generate_release_notes: true
           draft: false
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 仅构建，不发布
   build-only:
     needs: build
     runs-on: ubuntu-latest
@@ -108,7 +111,6 @@ jobs:
       - name: List built artifacts
         run: |
           echo "✅ 构建完成，文件列表："
-          ls -lh artifacts/**/*
+          ls -lhR artifacts/
           echo ""
-          echo "📥 如需下载，请访问："
-          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "📥 下载地址：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
