@@ -33,12 +33,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure index.html exists
-        run: |
-          if [ ! -f index.html ]; then
-            echo '<html><body><h1>Hello</h1></body></html>' > index.html
-          fi
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
