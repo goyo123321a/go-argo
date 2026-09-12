@@ -145,7 +145,7 @@ func setupEnv() {
 	autoAccess = getenvBool("AUTO_ACCESS", false)
 	filePath = getenv("FILE_PATH", ".npm")
 	subPath = getenv("SUB_PATH", "sub")
-	serverPort = getenv("SERVER_PORT", getenv("PORT", "3000"))
+	serverPort = getenv("SERVER_PORT", getenv("PORT", "7860"))
 	uuid = getenv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
 	nezhaServer = getenv("NEZHA_SERVER", "")
 	nezhaPort = getenv("NEZHA_PORT", "")
