@@ -1,29 +1,21 @@
-# ===== 版本控制 =====
 .git
 .gitignore
-.gitattributes
-
-# ===== GitHub 相关 =====
 .github
-
-# ===== Docker / CI =====
 Dockerfile
 .dockerignore
 docker-compose*.yml
 
-# ===== Go 构建产物 =====
 app
 nodejs
 nodejs-*
+go-argo-*
 *.exe
 *.test
 *.out
 
-# ===== 依赖目录 =====
 vendor/
 node_modules/
 
-# ===== 运行时生成的文件 =====
 .npm/
 *.log
 boot.log
@@ -37,25 +29,19 @@ key.txt
 tunnel.json
 tunnel.yml
 
-# ===== 文档 / 编辑器 =====
 *.md
-!README.md
-LICENSE
 .vscode
 .idea
 *.swp
 *.swo
 *~
 
-# ===== 系统文件 =====
 .DS_Store
 Thumbs.db
 
-# ===== 环境变量 =====
 .env
 .env.*
 *.local
 
-# ===== 测试 / 覆盖率 =====
 coverage/
 *.cover
