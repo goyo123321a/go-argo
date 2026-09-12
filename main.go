@@ -648,9 +648,9 @@ func getMetaInfo() string {
 	return "Unknown"
 }
 
-// 获取服务器公网 IP（axios → curl 兜底，与 Node.js 版一致）
+// 获取服务器公网 IP（HTTP → curl 兜底，与 Node.js 版一致）
 func getServerIP() string {
-	// 1. ipv4.ip.sb (HTTP 请求)
+	// 1. ipv4.ip.sb (HTTP)
 	if body, err := httpGetString("http://ipv4.ip.sb"); err == nil {
 		if ip := strings.TrimSpace(body); ip != "" {
 			return ip
@@ -662,7 +662,7 @@ func getServerIP() string {
 			return ip
 		}
 	}
-	// 3. ipv6.ip.sb (HTTP 请求)
+	// 3. ipv6.ip.sb (HTTP)
 	if body, err := httpGetString("http://ipv6.ip.sb"); err == nil {
 		if ip := strings.TrimSpace(body); ip != "" {
 			return "[" + ip + "]"
@@ -1063,6 +1063,18 @@ func cleanFiles() {
 
 // ========== HTTP 服务 ==========
 
+// 与 Node 版 __dirname 等价：以二进制所在目录为基准找 index.html
+func readIndexHTML() ([]byte, error) {
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "index.html")
+		if data, err := os.ReadFile(p); err == nil {
+			return data, nil
+		}
+	}
+	// 兜底：相对 CWD
+	return os.ReadFile("index.html")
+}
+
 func startHTTPServer() {
 	mux := http.NewServeMux()
 
@@ -1088,7 +1100,7 @@ func startHTTPServer() {
 			w.Write([]byte("Not Found"))
 			return
 		}
-		data, err := os.ReadFile("index.html")
+		data, err := readIndexHTML()
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write([]byte("Hello world!<br><br>You can access /{SUB_PATH}(Default: /sub) to get your nodes!"))
