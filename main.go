@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,9 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed index.html
+var indexHTMLFS embed.FS
 
 // ========== 全局配置 ==========
 
@@ -71,10 +75,8 @@ var (
 	publicKey  string
 )
 
-// 普通请求（有 15s 总超时）
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
-// 下载专用（无总超时，仅限建连和响应头，适合大文件）
 var downloadClient = &http.Client{
 	Transport: &http.Transport{
 		ResponseHeaderTimeout: 30 * time.Second,
@@ -145,7 +147,7 @@ func setupEnv() {
 	autoAccess = getenvBool("AUTO_ACCESS", false)
 	filePath = getenv("FILE_PATH", ".npm")
 	subPath = getenv("SUB_PATH", "sub")
-	serverPort = getenv("SERVER_PORT", getenv("PORT", "7860"))
+	serverPort = getenv("SERVER_PORT", getenv("PORT", "3000"))
 	uuid = getenv("UUID", "9afd1229-b893-40c1-84dd-51e7ce204913")
 	nezhaServer = getenv("NEZHA_SERVER", "")
 	nezhaPort = getenv("NEZHA_PORT", "")
@@ -241,7 +243,7 @@ func getJSON(u string, v interface{}) error {
 
 func downloadFile(dest, u string) error {
 	tmp := dest + ".download"
-	resp, err := downloadClient.Get(u) // 用无总超时的 client
+	resp, err := downloadClient.Get(u)
 	if err != nil {
 		return err
 	}
@@ -584,7 +586,6 @@ func waitForQuickTunnelLog(timeout time.Duration) string {
 	return ""
 }
 
-// 获取临时隧道 domain（最多重试 maxRetries 次）
 func extractDomains(maxRetries, retryCount int) error {
 	if argoAuth != "" && argoDomain != "" {
 		logf("ARGO_DOMAIN: %s", argoDomain)
@@ -648,27 +649,22 @@ func getMetaInfo() string {
 	return "Unknown"
 }
 
-// 获取服务器公网 IP（HTTP → curl 兜底，与 Node.js 版一致）
 func getServerIP() string {
-	// 1. ipv4.ip.sb (HTTP)
 	if body, err := httpGetString("http://ipv4.ip.sb"); err == nil {
 		if ip := strings.TrimSpace(body); ip != "" {
 			return ip
 		}
 	}
-	// 2. ipv4.ip.sb (curl 兜底)
 	if out, err := exec.Command("curl", "-sm", "3", "ipv4.ip.sb").Output(); err == nil {
 		if ip := strings.TrimSpace(string(out)); ip != "" {
 			return ip
 		}
 	}
-	// 3. ipv6.ip.sb (HTTP)
 	if body, err := httpGetString("http://ipv6.ip.sb"); err == nil {
 		if ip := strings.TrimSpace(body); ip != "" {
 			return "[" + ip + "]"
 		}
 	}
-	// 4. ipv6.ip.sb (curl 兜底)
 	if out, err := exec.Command("curl", "-sm", "3", "ipv6.ip.sb").Output(); err == nil {
 		if ip := strings.TrimSpace(string(out)); ip != "" {
 			return "[" + ip + "]"
@@ -738,13 +734,11 @@ func generateLinks(argoDomain string) {
 	logf("%s/sub.txt saved successfully", filePath)
 	logf("%s", encoded)
 
-	// fire-and-forget，不阻塞启动时序
 	go uploadNodes()
 }
 
 // ========== 上传 / 删除 ==========
 
-// 同步读取 sub.txt 里的节点（在 cleanupOldFiles 之前调用）
 func readNodesFromSub() []string {
 	if uploadURL == "" || !fileExists(subFilePath) {
 		return nil
@@ -1063,7 +1057,10 @@ func cleanFiles() {
 
 // ========== HTTP 服务 ==========
 
-// 与 Node 版 __dirname 等价：以二进制所在目录为基准找 index.html
+// 三级查找 index.html：
+//   1. 二进制所在目录（用户可覆盖）
+//   2. 二进制内嵌资源（go:embed）
+//   3. 当前工作目录（兜底）
 func readIndexHTML() ([]byte, error) {
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), "index.html")
@@ -1071,7 +1068,9 @@ func readIndexHTML() ([]byte, error) {
 			return data, nil
 		}
 	}
-	// 兜底：相对 CWD
+	if data, err := indexHTMLFS.ReadFile("index.html"); err == nil {
+		return data, nil
+	}
 	return os.ReadFile("index.html")
 }
 
@@ -1121,13 +1120,9 @@ func startHTTPServer() {
 func run() {
 	argoType()
 
-	// 先同步读取待删除节点（在 cleanupOldFiles 之前）
 	nodes := readNodesFromSub()
-
-	// 清理历史文件
 	cleanupOldFiles()
 
-	// 异步发删除请求（网络 IO 不影响启动时序）
 	if len(nodes) > 0 {
 		go postDeleteNodes(nodes)
 	}
