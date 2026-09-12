@@ -44,13 +44,13 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          go build -ldflags="-s -w" -o go-argo-${{ matrix.os }}-${{ matrix.arch }} .
+          go build -ldflags="-s -w" -o myapp-${{ matrix.os }}-${{ matrix.arch }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: go-argo-${{ matrix.os }}-${{ matrix.arch }}
-          path: go-argo-${{ matrix.os }}-${{ matrix.arch }}
+          name: myapp-${{ matrix.os }}-${{ matrix.arch }}
+          path: myapp-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 30
 
   release:
